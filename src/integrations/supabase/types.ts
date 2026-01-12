@@ -14,16 +14,423 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      alerts: {
+        Row: {
+          created_at: string
+          execution_id: string | null
+          id: string
+          job_id: string | null
+          message: string | null
+          read: boolean
+          title: string
+          type: string
+        }
+        Insert: {
+          created_at?: string
+          execution_id?: string | null
+          id?: string
+          job_id?: string | null
+          message?: string | null
+          read?: boolean
+          title: string
+          type: string
+        }
+        Update: {
+          created_at?: string
+          execution_id?: string | null
+          id?: string
+          job_id?: string | null
+          message?: string | null
+          read?: boolean
+          title?: string
+          type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "alerts_execution_id_fkey"
+            columns: ["execution_id"]
+            isOneToOne: false
+            referencedRelation: "backup_executions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "alerts_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "backup_jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      backup_executions: {
+        Row: {
+          checksum: string | null
+          completed_at: string | null
+          created_at: string
+          duration: number | null
+          error_message: string | null
+          file_name: string | null
+          file_size: number | null
+          id: string
+          job_id: string
+          logs: string | null
+          started_at: string
+          status: Database["public"]["Enums"]["job_status"]
+        }
+        Insert: {
+          checksum?: string | null
+          completed_at?: string | null
+          created_at?: string
+          duration?: number | null
+          error_message?: string | null
+          file_name?: string | null
+          file_size?: number | null
+          id?: string
+          job_id: string
+          logs?: string | null
+          started_at?: string
+          status?: Database["public"]["Enums"]["job_status"]
+        }
+        Update: {
+          checksum?: string | null
+          completed_at?: string | null
+          created_at?: string
+          duration?: number | null
+          error_message?: string | null
+          file_name?: string | null
+          file_size?: number | null
+          id?: string
+          job_id?: string
+          logs?: string | null
+          started_at?: string
+          status?: Database["public"]["Enums"]["job_status"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "backup_executions_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: false
+            referencedRelation: "backup_jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      backup_jobs: {
+        Row: {
+          compression: Database["public"]["Enums"]["compression_type"]
+          created_at: string
+          created_by: string | null
+          destination_id: string
+          enabled: boolean
+          format: Database["public"]["Enums"]["backup_format"]
+          id: string
+          instance_id: string
+          last_run: string | null
+          name: string
+          next_run: string | null
+          retention_count: number | null
+          retention_days: number | null
+          schedule: string
+          status: Database["public"]["Enums"]["job_status"]
+          timeout: number
+          updated_at: string
+        }
+        Insert: {
+          compression?: Database["public"]["Enums"]["compression_type"]
+          created_at?: string
+          created_by?: string | null
+          destination_id: string
+          enabled?: boolean
+          format?: Database["public"]["Enums"]["backup_format"]
+          id?: string
+          instance_id: string
+          last_run?: string | null
+          name: string
+          next_run?: string | null
+          retention_count?: number | null
+          retention_days?: number | null
+          schedule?: string
+          status?: Database["public"]["Enums"]["job_status"]
+          timeout?: number
+          updated_at?: string
+        }
+        Update: {
+          compression?: Database["public"]["Enums"]["compression_type"]
+          created_at?: string
+          created_by?: string | null
+          destination_id?: string
+          enabled?: boolean
+          format?: Database["public"]["Enums"]["backup_format"]
+          id?: string
+          instance_id?: string
+          last_run?: string | null
+          name?: string
+          next_run?: string | null
+          retention_count?: number | null
+          retention_days?: number | null
+          schedule?: string
+          status?: Database["public"]["Enums"]["job_status"]
+          timeout?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "backup_jobs_destination_id_fkey"
+            columns: ["destination_id"]
+            isOneToOne: false
+            referencedRelation: "ftp_destinations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "backup_jobs_instance_id_fkey"
+            columns: ["instance_id"]
+            isOneToOne: false
+            referencedRelation: "postgres_instances"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ftp_destinations: {
+        Row: {
+          base_directory: string
+          created_at: string
+          created_by: string | null
+          host: string
+          id: string
+          last_tested: string | null
+          name: string
+          passive_mode: boolean | null
+          password: string | null
+          port: number
+          protocol: Database["public"]["Enums"]["ftp_protocol"]
+          ssh_key: string | null
+          status: Database["public"]["Enums"]["connection_status"]
+          updated_at: string
+          username: string
+        }
+        Insert: {
+          base_directory?: string
+          created_at?: string
+          created_by?: string | null
+          host: string
+          id?: string
+          last_tested?: string | null
+          name: string
+          passive_mode?: boolean | null
+          password?: string | null
+          port?: number
+          protocol?: Database["public"]["Enums"]["ftp_protocol"]
+          ssh_key?: string | null
+          status?: Database["public"]["Enums"]["connection_status"]
+          updated_at?: string
+          username: string
+        }
+        Update: {
+          base_directory?: string
+          created_at?: string
+          created_by?: string | null
+          host?: string
+          id?: string
+          last_tested?: string | null
+          name?: string
+          passive_mode?: boolean | null
+          password?: string | null
+          port?: number
+          protocol?: Database["public"]["Enums"]["ftp_protocol"]
+          ssh_key?: string | null
+          status?: Database["public"]["Enums"]["connection_status"]
+          updated_at?: string
+          username?: string
+        }
+        Relationships: []
+      }
+      notification_settings: {
+        Row: {
+          created_at: string
+          email_on_failure: boolean
+          email_on_success: boolean
+          id: string
+          updated_at: string
+          user_id: string
+          webhook_on_failure: boolean
+          webhook_on_success: boolean
+          webhook_url: string | null
+        }
+        Insert: {
+          created_at?: string
+          email_on_failure?: boolean
+          email_on_success?: boolean
+          id?: string
+          updated_at?: string
+          user_id: string
+          webhook_on_failure?: boolean
+          webhook_on_success?: boolean
+          webhook_url?: string | null
+        }
+        Update: {
+          created_at?: string
+          email_on_failure?: boolean
+          email_on_success?: boolean
+          id?: string
+          updated_at?: string
+          user_id?: string
+          webhook_on_failure?: boolean
+          webhook_on_success?: boolean
+          webhook_url?: string | null
+        }
+        Relationships: []
+      }
+      postgres_instances: {
+        Row: {
+          client_tag: string | null
+          created_at: string
+          created_by: string | null
+          criticality: Database["public"]["Enums"]["criticality_level"] | null
+          database: string
+          environment: Database["public"]["Enums"]["environment_type"]
+          host: string
+          id: string
+          last_checked: string | null
+          name: string
+          password: string
+          port: number
+          ssl_enabled: boolean
+          status: Database["public"]["Enums"]["connection_status"]
+          updated_at: string
+          username: string
+          version: string | null
+        }
+        Insert: {
+          client_tag?: string | null
+          created_at?: string
+          created_by?: string | null
+          criticality?: Database["public"]["Enums"]["criticality_level"] | null
+          database: string
+          environment?: Database["public"]["Enums"]["environment_type"]
+          host: string
+          id?: string
+          last_checked?: string | null
+          name: string
+          password: string
+          port?: number
+          ssl_enabled?: boolean
+          status?: Database["public"]["Enums"]["connection_status"]
+          updated_at?: string
+          username: string
+          version?: string | null
+        }
+        Update: {
+          client_tag?: string | null
+          created_at?: string
+          created_by?: string | null
+          criticality?: Database["public"]["Enums"]["criticality_level"] | null
+          database?: string
+          environment?: Database["public"]["Enums"]["environment_type"]
+          host?: string
+          id?: string
+          last_checked?: string | null
+          name?: string
+          password?: string
+          port?: number
+          ssl_enabled?: boolean
+          status?: Database["public"]["Enums"]["connection_status"]
+          updated_at?: string
+          username?: string
+          version?: string | null
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          created_at: string
+          email: string
+          environments: Database["public"]["Enums"]["environment_type"][] | null
+          id: string
+          last_login: string | null
+          name: string | null
+          role: Database["public"]["Enums"]["user_role"]
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          email: string
+          environments?:
+            | Database["public"]["Enums"]["environment_type"][]
+            | null
+          id?: string
+          last_login?: string | null
+          name?: string | null
+          role?: Database["public"]["Enums"]["user_role"]
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          environments?:
+            | Database["public"]["Enums"]["environment_type"][]
+            | null
+          id?: string
+          last_login?: string | null
+          name?: string | null
+          role?: Database["public"]["Enums"]["user_role"]
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      user_roles: {
+        Row: {
+          id: string
+          role: Database["public"]["Enums"]["user_role"]
+          user_id: string
+        }
+        Insert: {
+          id?: string
+          role: Database["public"]["Enums"]["user_role"]
+          user_id: string
+        }
+        Update: {
+          id?: string
+          role?: Database["public"]["Enums"]["user_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      can_modify: { Args: { _user_id: string }; Returns: boolean }
+      get_user_role: {
+        Args: { _user_id: string }
+        Returns: Database["public"]["Enums"]["user_role"]
+      }
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["user_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
+      is_admin: { Args: { _user_id: string }; Returns: boolean }
     }
     Enums: {
-      [_ in never]: never
+      backup_format: "custom" | "sql"
+      compression_type: "gzip" | "zstd" | "none"
+      connection_status:
+        | "online"
+        | "offline"
+        | "unknown"
+        | "connected"
+        | "disconnected"
+      criticality_level: "low" | "medium" | "high" | "critical"
+      environment_type: "production" | "staging" | "development"
+      ftp_protocol: "ftp" | "ftps" | "sftp"
+      job_status: "scheduled" | "running" | "success" | "failed" | "cancelled"
+      user_role: "admin" | "operator" | "viewer"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +557,21 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      backup_format: ["custom", "sql"],
+      compression_type: ["gzip", "zstd", "none"],
+      connection_status: [
+        "online",
+        "offline",
+        "unknown",
+        "connected",
+        "disconnected",
+      ],
+      criticality_level: ["low", "medium", "high", "critical"],
+      environment_type: ["production", "staging", "development"],
+      ftp_protocol: ["ftp", "ftps", "sftp"],
+      job_status: ["scheduled", "running", "success", "failed", "cancelled"],
+      user_role: ["admin", "operator", "viewer"],
+    },
   },
 } as const
