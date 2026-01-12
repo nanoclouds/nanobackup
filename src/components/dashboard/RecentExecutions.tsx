@@ -1,15 +1,16 @@
-import { BackupExecution } from '@/types/backup';
+import { BackupExecution } from '@/hooks/useExecutions';
 import { StatusBadge } from './StatusBadge';
 import { formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { FileText, Clock, Database } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Link } from 'react-router-dom';
 
 interface RecentExecutionsProps {
   executions: BackupExecution[];
 }
 
-function formatBytes(bytes?: number): string {
+function formatBytes(bytes?: number | null): string {
   if (!bytes) return '-';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let unitIndex = 0;
@@ -21,7 +22,7 @@ function formatBytes(bytes?: number): string {
   return `${size.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function formatDuration(seconds?: number): string {
+function formatDuration(seconds?: number | null): string {
   if (!seconds) return '-';
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -37,9 +38,11 @@ export function RecentExecutions({ executions }: RecentExecutionsProps) {
     <div className="rounded-lg border border-border bg-card">
       <div className="flex items-center justify-between border-b border-border px-6 py-4">
         <h3 className="text-lg font-semibold text-foreground">Execuções Recentes</h3>
-        <Button variant="outline" size="sm">
-          Ver todas
-        </Button>
+        <Link to="/executions">
+          <Button variant="outline" size="sm">
+            Ver todas
+          </Button>
+        </Link>
       </div>
       <div className="divide-y divide-border">
         {executions.map((execution) => (
@@ -53,12 +56,12 @@ export function RecentExecutions({ executions }: RecentExecutionsProps) {
               </div>
               <div>
                 <p className="font-medium text-foreground">
-                  {execution.job?.name || 'Job desconhecido'}
+                  {execution.backup_jobs?.name || 'Job desconhecido'}
                 </p>
                 <div className="flex items-center gap-3 text-sm text-muted-foreground">
                   <span className="flex items-center gap-1">
                     <Clock className="h-3 w-3" />
-                    {formatDistanceToNow(execution.startedAt, { 
+                    {formatDistanceToNow(new Date(execution.started_at), { 
                       addSuffix: true, 
                       locale: ptBR 
                     })}
@@ -66,17 +69,19 @@ export function RecentExecutions({ executions }: RecentExecutionsProps) {
                   {execution.duration && (
                     <span>• {formatDuration(execution.duration)}</span>
                   )}
-                  {execution.fileSize && (
-                    <span>• {formatBytes(execution.fileSize)}</span>
+                  {execution.file_size && (
+                    <span>• {formatBytes(execution.file_size)}</span>
                   )}
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-3">
               <StatusBadge status={execution.status} />
-              <Button variant="ghost" size="icon">
-                <FileText className="h-4 w-4" />
-              </Button>
+              <Link to="/executions">
+                <Button variant="ghost" size="icon">
+                  <FileText className="h-4 w-4" />
+                </Button>
+              </Link>
             </div>
           </div>
         ))}
