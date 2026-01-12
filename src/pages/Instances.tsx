@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { StatusBadge } from '@/components/dashboard/StatusBadge';
 import { useInstances, PostgresInstance } from '@/hooks/useInstances';
+import { useTestPostgresConnection } from '@/hooks/useTestConnection';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -9,7 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { InstanceFormDialog } from '@/components/instances/InstanceFormDialog';
 import { DeleteInstanceDialog } from '@/components/instances/DeleteInstanceDialog';
 import { 
-  Plus, Search, MoreVertical, TestTube, Edit, Trash2, Database, ShieldCheck
+  Plus, Search, MoreVertical, TestTube, Edit, Trash2, Database, ShieldCheck, Loader2
 } from 'lucide-react';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -24,10 +25,12 @@ const criticalityColors = {
 
 export default function Instances() {
   const { data: instances = [], isLoading } = useInstances();
+  const testConnection = useTestPostgresConnection();
   const [search, setSearch] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [selectedInstance, setSelectedInstance] = useState<PostgresInstance | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
 
   const filtered = instances.filter(i => 
     i.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -47,6 +50,15 @@ export default function Instances() {
   const handleNew = () => {
     setSelectedInstance(null);
     setFormOpen(true);
+  };
+
+  const handleTest = async (instance: PostgresInstance) => {
+    setTestingId(instance.id);
+    try {
+      await testConnection.mutateAsync(instance.id);
+    } finally {
+      setTestingId(null);
+    }
   };
 
   return (
@@ -102,7 +114,10 @@ export default function Instances() {
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreVertical className="h-4 w-4" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-48">
-                        <DropdownMenuItem><TestTube className="mr-2 h-4 w-4" />Testar Conexão</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleTest(instance)} disabled={testingId === instance.id}>
+                          {testingId === instance.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <TestTube className="mr-2 h-4 w-4" />}
+                          {testingId === instance.id ? 'Testando...' : 'Testar Conexão'}
+                        </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => handleEdit(instance)}><Edit className="mr-2 h-4 w-4" />Editar</DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleDelete(instance)}><Trash2 className="mr-2 h-4 w-4" />Excluir</DropdownMenuItem>
