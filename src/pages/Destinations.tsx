@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { StatusBadge } from '@/components/dashboard/StatusBadge';
 import { useDestinations, FtpDestination } from '@/hooks/useDestinations';
+import { useTestFtpConnection } from '@/hooks/useTestConnection';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -10,19 +11,30 @@ import { DestinationFormDialog } from '@/components/destinations/DestinationForm
 import { DeleteDestinationDialog } from '@/components/destinations/DeleteDestinationDialog';
 import { formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { Plus, Search, MoreVertical, TestTube, Edit, Trash2, FolderSync, Server, Lock } from 'lucide-react';
+import { Plus, Search, MoreVertical, TestTube, Edit, Trash2, FolderSync, Server, Lock, Loader2 } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 
 const protocolLabels = { ftp: 'FTP', ftps: 'FTPS', sftp: 'SFTP' };
 
 export default function Destinations() {
   const { data: destinations = [], isLoading } = useDestinations();
+  const testConnection = useTestFtpConnection();
   const [search, setSearch] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [selected, setSelected] = useState<FtpDestination | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
 
   const filtered = destinations.filter(d => d.name.toLowerCase().includes(search.toLowerCase()) || d.host.toLowerCase().includes(search.toLowerCase()));
+
+  const handleTest = async (dest: FtpDestination) => {
+    setTestingId(dest.id);
+    try {
+      await testConnection.mutateAsync(dest.id);
+    } finally {
+      setTestingId(null);
+    }
+  };
 
   return (
     <MainLayout title="Destinos FTP/SFTP" subtitle="Configure servidores de armazenamento remoto">
@@ -56,7 +68,10 @@ export default function Destinations() {
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreVertical className="h-4 w-4" /></Button></DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-48">
-                    <DropdownMenuItem><TestTube className="mr-2 h-4 w-4" />Testar Conexão</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleTest(dest)} disabled={testingId === dest.id}>
+                      {testingId === dest.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <TestTube className="mr-2 h-4 w-4" />}
+                      {testingId === dest.id ? 'Testando...' : 'Testar Conexão'}
+                    </DropdownMenuItem>
                     <DropdownMenuItem onClick={() => { setSelected(dest); setFormOpen(true); }}><Edit className="mr-2 h-4 w-4" />Editar</DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => { setSelected(dest); setDeleteOpen(true); }}><Trash2 className="mr-2 h-4 w-4" />Excluir</DropdownMenuItem>
