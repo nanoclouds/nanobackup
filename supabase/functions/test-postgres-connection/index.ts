@@ -63,9 +63,21 @@ serve(async (req) => {
       await client.connect();
       
       // Get PostgreSQL version
-      const result = await client.queryObject<{ version: string }>("SELECT version()");
-      const versionMatch = result.rows[0]?.version?.match(/PostgreSQL (\d+\.\d+)/);
+      const versionResult = await client.queryObject<{ version: string }>("SELECT version()");
+      const versionMatch = versionResult.rows[0]?.version?.match(/PostgreSQL (\d+\.\d+)/);
       const version = versionMatch ? versionMatch[1] : null;
+      
+      // List all databases (excluding templates)
+      const dbResult = await client.queryObject<{ datname: string; size: string }>(
+        `SELECT datname, pg_size_pretty(pg_database_size(datname)) as size 
+         FROM pg_database 
+         WHERE datistemplate = false 
+         ORDER BY datname`
+      );
+      const databases = dbResult.rows.map(row => ({
+        name: row.datname,
+        size: row.size
+      }));
       
       await client.end();
       
@@ -86,7 +98,8 @@ serve(async (req) => {
           success: true, 
           message: "Conexão estabelecida com sucesso",
           latency,
-          version
+          version,
+          databases
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );

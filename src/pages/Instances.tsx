@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { StatusBadge } from '@/components/dashboard/StatusBadge';
 import { useInstances, PostgresInstance } from '@/hooks/useInstances';
-import { useTestPostgresConnection } from '@/hooks/useTestConnection';
+import { useTestPostgresConnection, PostgresTestResult } from '@/hooks/useTestConnection';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InstanceFormDialog } from '@/components/instances/InstanceFormDialog';
 import { DeleteInstanceDialog } from '@/components/instances/DeleteInstanceDialog';
+import { DatabasesDialog } from '@/components/instances/DatabasesDialog';
 import { 
   Plus, Search, MoreVertical, TestTube, Edit, Trash2, Database, ShieldCheck, Loader2
 } from 'lucide-react';
@@ -29,8 +30,10 @@ export default function Instances() {
   const [search, setSearch] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [databasesOpen, setDatabasesOpen] = useState(false);
   const [selectedInstance, setSelectedInstance] = useState<PostgresInstance | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<PostgresTestResult | null>(null);
 
   const filtered = instances.filter(i => 
     i.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -54,8 +57,13 @@ export default function Instances() {
 
   const handleTest = async (instance: PostgresInstance) => {
     setTestingId(instance.id);
+    setSelectedInstance(instance);
     try {
-      await testConnection.mutateAsync(instance.id);
+      const result = await testConnection.mutateAsync(instance.id);
+      if (result.success && result.databases && result.databases.length > 0) {
+        setTestResult(result);
+        setDatabasesOpen(true);
+      }
     } finally {
       setTestingId(null);
     }
@@ -133,6 +141,14 @@ export default function Instances() {
 
       <InstanceFormDialog open={formOpen} onOpenChange={setFormOpen} instance={selectedInstance} />
       <DeleteInstanceDialog open={deleteOpen} onOpenChange={setDeleteOpen} instance={selectedInstance} />
+      <DatabasesDialog 
+        open={databasesOpen} 
+        onOpenChange={setDatabasesOpen} 
+        instanceName={selectedInstance?.name || ''} 
+        databases={testResult?.databases || []}
+        version={testResult?.version}
+        latency={testResult?.latency}
+      />
     </MainLayout>
   );
 }
