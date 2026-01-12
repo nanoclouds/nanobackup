@@ -171,6 +171,9 @@ export function JobFormDialog({ open, onOpenChange, job }: JobFormDialogProps) {
                       ))}
                     </SelectContent>
                   </Select>
+                  <FormDescription>
+                    O backup será executado para todos os bancos de dados desta instância (pg_dumpall)
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}

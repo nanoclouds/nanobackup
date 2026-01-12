@@ -62,7 +62,7 @@ export function InstanceFormDialog({ open, onOpenChange, instance }: InstanceFor
       name: '',
       host: '',
       port: 5432,
-      database: '',
+      database: 'postgres',
       username: '',
       password: '',
       ssl_enabled: false,
@@ -91,7 +91,7 @@ export function InstanceFormDialog({ open, onOpenChange, instance }: InstanceFor
         name: '',
         host: '',
         port: 5432,
-        database: '',
+        database: 'postgres',
         username: '',
         password: '',
         ssl_enabled: false,
@@ -176,10 +176,13 @@ export function InstanceFormDialog({ open, onOpenChange, instance }: InstanceFor
               name="database"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Banco de Dados</FormLabel>
+                  <FormLabel>Banco de Conexão</FormLabel>
                   <FormControl>
                     <Input placeholder="postgres" {...field} />
                   </FormControl>
+                  <FormDescription>
+                    Banco usado para conexão. O backup incluirá todos os bancos da instância.
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
