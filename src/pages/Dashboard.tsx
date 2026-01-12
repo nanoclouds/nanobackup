@@ -3,22 +3,36 @@ import { StatsCard } from '@/components/dashboard/StatsCard';
 import { RecentExecutions } from '@/components/dashboard/RecentExecutions';
 import { JobsOverview } from '@/components/dashboard/JobsOverview';
 import { SuccessRateChart } from '@/components/dashboard/SuccessRateChart';
-import { 
-  mockDashboardStats, 
-  mockExecutions, 
-  mockJobs 
-} from '@/data/mockData';
+import { useDashboardStats } from '@/hooks/useDashboardStats';
+import { useExecutions } from '@/hooks/useExecutions';
+import { useJobs } from '@/hooks/useJobs';
 import { 
   Database, 
   Calendar, 
-  CheckCircle2, 
   XCircle, 
-  Loader2,
-  TrendingUp
+  TrendingUp,
+  Loader2
 } from 'lucide-react';
 
 export default function Dashboard() {
-  const stats = mockDashboardStats;
+  const { data: stats, isLoading: statsLoading } = useDashboardStats();
+  const { data: executions, isLoading: executionsLoading } = useExecutions();
+  const { data: jobs, isLoading: jobsLoading } = useJobs();
+
+  const isLoading = statsLoading || executionsLoading || jobsLoading;
+
+  if (isLoading) {
+    return (
+      <MainLayout 
+        title="Dashboard" 
+        subtitle="Visão geral do sistema de backups"
+      >
+        <div className="flex min-h-[400px] items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      </MainLayout>
+    );
+  }
 
   return (
     <MainLayout 
@@ -29,31 +43,30 @@ export default function Dashboard() {
       <div className="mb-6 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatsCard
           title="Instâncias PostgreSQL"
-          value={stats.totalInstances}
-          subtitle="2 online, 1 offline"
+          value={stats?.totalInstances ?? 0}
+          subtitle={`${stats?.onlineInstances ?? 0} online`}
           icon={Database}
         />
         <StatsCard
           title="Jobs Ativos"
-          value={stats.totalJobs}
-          subtitle={`${stats.runningJobs} em execução`}
+          value={stats?.enabledJobs ?? 0}
+          subtitle={`${stats?.runningJobs ?? 0} em execução`}
           icon={Calendar}
-          variant="success"
+          variant={stats?.runningJobs ? 'warning' : 'success'}
         />
         <StatsCard
           title="Taxa de Sucesso"
-          value={`${stats.successRate}%`}
-          subtitle="Últimos 30 dias"
+          value={`${stats?.successRate ?? 0}%`}
+          subtitle="Total de execuções"
           icon={TrendingUp}
-          trend={{ value: 2.5, isPositive: true }}
           variant="success"
         />
         <StatsCard
           title="Falhas Recentes"
-          value={stats.failedJobs}
-          subtitle="Requer atenção"
+          value={stats?.failedJobs ?? 0}
+          subtitle="Jobs com falha"
           icon={XCircle}
-          variant={stats.failedJobs > 0 ? 'error' : 'default'}
+          variant={(stats?.failedJobs ?? 0) > 0 ? 'error' : 'default'}
         />
       </div>
 
@@ -68,27 +81,27 @@ export default function Dashboard() {
             <div className="flex items-center justify-between rounded-lg bg-secondary/50 p-4">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success/10">
-                  <CheckCircle2 className="h-5 w-5 text-success" />
+                  <TrendingUp className="h-5 w-5 text-success" />
                 </div>
                 <div>
                   <p className="font-medium text-foreground">Backups Concluídos</p>
                   <p className="text-sm text-muted-foreground">Hoje</p>
                 </div>
               </div>
-              <p className="text-2xl font-bold text-success">12</p>
+              <p className="text-2xl font-bold text-success">{stats?.todaySuccessful ?? 0}</p>
             </div>
 
             <div className="flex items-center justify-between rounded-lg bg-secondary/50 p-4">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-warning/10">
-                  <Loader2 className="h-5 w-5 animate-spin text-warning" />
+                  <Loader2 className={`h-5 w-5 text-warning ${stats?.runningJobs ? 'animate-spin' : ''}`} />
                 </div>
                 <div>
                   <p className="font-medium text-foreground">Em Execução</p>
-                  <p className="text-sm text-muted-foreground">analytics-daily</p>
+                  <p className="text-sm text-muted-foreground">Jobs ativos</p>
                 </div>
               </div>
-              <p className="text-2xl font-bold text-warning">1</p>
+              <p className="text-2xl font-bold text-warning">{stats?.runningJobs ?? 0}</p>
             </div>
 
             <div className="flex items-center justify-between rounded-lg bg-secondary/50 p-4">
@@ -98,22 +111,39 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <p className="font-medium text-foreground">Falhas</p>
-                  <p className="text-sm text-muted-foreground">Últimas 24h</p>
+                  <p className="text-sm text-muted-foreground">Hoje</p>
                 </div>
               </div>
-              <p className="text-2xl font-bold text-destructive">1</p>
+              <p className="text-2xl font-bold text-destructive">{stats?.todayFailed ?? 0}</p>
             </div>
           </div>
         </div>
       </div>
 
       {/* Jobs Overview */}
-      <div className="mb-6">
-        <JobsOverview jobs={mockJobs} />
-      </div>
+      {jobs && jobs.length > 0 && (
+        <div className="mb-6">
+          <JobsOverview jobs={jobs} />
+        </div>
+      )}
 
       {/* Recent Executions */}
-      <RecentExecutions executions={mockExecutions} />
+      {executions && executions.length > 0 && (
+        <RecentExecutions executions={executions.slice(0, 5)} />
+      )}
+
+      {/* Empty State */}
+      {(!jobs || jobs.length === 0) && (!executions || executions.length === 0) && (
+        <div className="rounded-lg border border-border bg-card p-12 text-center">
+          <Database className="mx-auto h-12 w-12 text-muted-foreground" />
+          <h3 className="mt-4 text-lg font-semibold text-foreground">
+            Bem-vindo ao Nano Backup!
+          </h3>
+          <p className="mt-2 text-muted-foreground">
+            Comece cadastrando uma instância PostgreSQL e configurando seu primeiro job de backup.
+          </p>
+        </div>
+      )}
     </MainLayout>
   );
 }
