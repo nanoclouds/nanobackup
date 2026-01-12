@@ -31,6 +31,8 @@ import { Loader2 } from 'lucide-react';
 import { BackupJob, CreateJobData, useCreateJob, useUpdateJob } from '@/hooks/useJobs';
 import { useInstances } from '@/hooks/useInstances';
 import { useDestinations } from '@/hooks/useDestinations';
+import { CronPreview } from './CronPreview';
+import { validateCronExpression } from '@/lib/cron';
 
 const jobSchema = z.object({
   name: z.string().min(1, 'Nome é obrigatório').max(100),
@@ -38,7 +40,10 @@ const jobSchema = z.object({
   destination_id: z.string().uuid('Selecione um destino'),
   format: z.enum(['custom', 'sql']),
   compression: z.enum(['gzip', 'zstd', 'none']),
-  schedule: z.string().min(1, 'Agendamento é obrigatório').max(100),
+  schedule: z.string().min(1, 'Agendamento é obrigatório').max(100).refine(
+    (val) => validateCronExpression(val).isValid,
+    (val) => ({ message: validateCronExpression(val).error || 'Expressão cron inválida' })
+  ),
   enabled: z.boolean(),
   retention_count: z.coerce.number().min(1).max(1000).nullable().optional(),
   retention_days: z.coerce.number().min(1).max(3650).nullable().optional(),
@@ -253,9 +258,13 @@ export function JobFormDialog({ open, onOpenChange, job }: JobFormDialogProps) {
                     <Input placeholder="0 2 * * *" className="font-mono" {...field} />
                   </FormControl>
                   <FormDescription>
-                    Formato cron: minuto hora dia mês dia_semana
+                    Formato: minuto hora dia mês dia_semana
                   </FormDescription>
                   <FormMessage />
+                  <CronPreview 
+                    expression={field.value} 
+                    onSelectPreset={(preset) => form.setValue('schedule', preset, { shouldValidate: true })}
+                  />
                 </FormItem>
               )}
             />
