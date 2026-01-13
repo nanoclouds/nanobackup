@@ -344,10 +344,16 @@ SET session_replication_role = 'replica';
     await pgClient.end();
 
     const sqlContent = sqlParts.join('');
-    const chunkSize = new TextEncoder().encode(sqlContent).length;
+    const contentBytes = new TextEncoder().encode(sqlContent);
+    const chunkSize = contentBytes.length;
     const duration = Date.now() - startTime;
     
-    console.log(`Chunk complete: ${tablesProcessedInChunk} new tables, ${rowsProcessedInChunk} rows, ${(chunkSize / 1024).toFixed(2)} KB in ${duration}ms. Last: ${isLastChunk}`);
+    // Calculate SHA256 checksum of the chunk content
+    const hashBuffer = await crypto.subtle.digest("SHA-256", contentBytes);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const chunkChecksum = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+    
+    console.log(`Chunk complete: ${tablesProcessedInChunk} new tables, ${rowsProcessedInChunk} rows, ${(chunkSize / 1024).toFixed(2)} KB in ${duration}ms. Checksum: ${chunkChecksum.substring(0, 16)}...`);
 
     return new Response(
       JSON.stringify({
@@ -363,6 +369,7 @@ SET session_replication_role = 'replica';
           totalTables,
           totalRows,
           currentTableName: lastProcessedTableName,
+          checksum: chunkChecksum,
         },
         pagination: {
           isFirstChunk,

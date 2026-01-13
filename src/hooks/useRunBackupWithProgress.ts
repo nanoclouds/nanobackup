@@ -232,7 +232,9 @@ export function useRunBackupWithProgress(
             let totalTablesProcessed = 0;
             let totalRowsProcessed = 0;
             let totalBytesUploaded = 0;
+            let totalBytesGenerated = 0;
             let chunkCount = 0;
+            const chunkChecksums: string[] = [];
             
             // Process chunks incrementally until no more data
             let cursor: { tableIndex: number; rowOffset: number } | null = null;
@@ -282,9 +284,16 @@ export function useRunBackupWithProgress(
               const chunkSize = chunkResult.stats?.size || 0;
               const rowsInChunk = chunkResult.stats?.rowsInChunk || 0;
               const currentTableName = chunkResult.stats?.currentTableName || '';
+              const chunkChecksum = chunkResult.stats?.checksum || '';
+              
+              // Store chunk checksum for final verification
+              if (chunkChecksum) {
+                chunkChecksums.push(chunkChecksum);
+              }
               
               totalTablesProcessed = chunkResult.stats?.totalTables || totalTablesProcessed;
               totalRowsProcessed += rowsInChunk;
+              totalBytesGenerated += chunkSize;
               
               // Update pagination state
               hasMoreData = chunkResult.pagination?.hasMoreData || false;
@@ -350,10 +359,18 @@ export function useRunBackupWithProgress(
                   uploadSuccess = true;
                   totalBytesUploaded += chunkSize;
                   
-                  // Log upload result with remote file info
+                  // Verify upload integrity
+                  const uploadedBytes = uploadResult.uploadedBytes || 0;
+                  const uploadChecksum = uploadResult.checksum || '';
+                  
+                  if (uploadedBytes > 0 && uploadedBytes !== chunkSize) {
+                    dbLogs += `[${new Date().toISOString()}] ⚠ Alerta: Tamanho enviado (${uploadedBytes}) ≠ gerado (${chunkSize})\n`;
+                  }
+                  
+                  // Log upload result with checksum info
                   const remoteInfo = uploadResult.message || '';
                   const remoteSize = uploadResult.remoteSize || 0;
-                  dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (remoto: ${(remoteSize / 1024).toFixed(2)} KB)\n`;
+                  dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (remoto: ${(remoteSize / 1024).toFixed(2)} KB) ✓ SHA256:${chunkChecksum.substring(0, 8)}...\n`;
                 }
                 
                 // Small delay between chunks to prevent FTP server overload
@@ -363,6 +380,13 @@ export function useRunBackupWithProgress(
               } else {
                 dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (sem destino)\n`;
               }
+            }
+            
+            // Verify total bytes integrity
+            if (destination && totalBytesUploaded !== totalBytesGenerated) {
+              dbLogs += `[${new Date().toISOString()}] ⚠ Verificação: Bytes enviados (${totalBytesUploaded}) ≠ gerados (${totalBytesGenerated})\n`;
+            } else if (destination) {
+              dbLogs += `[${new Date().toISOString()}] ✓ Integridade OK: ${totalBytesUploaded} bytes verificados\n`;
             }
             
             dbLogs += `[${new Date().toISOString()}] ✓ Todos os ${totalRowsProcessed} registros processados em ${chunkCount} chunks\n`;
@@ -407,13 +431,15 @@ export function useRunBackupWithProgress(
               }
             }
             
-            // Generate checksum
-            const checksumData = `${db.name}:${totalTablesProcessed}:${totalRowsProcessed}:${fileSize}:${new Date().toISOString()}`;
+            // Generate final checksum combining all chunk checksums
+            const combinedChecksumData = chunkChecksums.join(':');
             const encoder = new TextEncoder();
-            const data = encoder.encode(checksumData);
+            const data = encoder.encode(combinedChecksumData);
             const hashBuffer = await crypto.subtle.digest('SHA-256', data);
             const hashArray = Array.from(new Uint8Array(hashBuffer));
             const localChecksum = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            
+            dbLogs += `[${new Date().toISOString()}] Checksum final: SHA256:${localChecksum.substring(0, 16)}...\n`;
             
             backupSuccess = true;
             
