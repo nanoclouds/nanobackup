@@ -1,6 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { Json } from '@/integrations/supabase/types';
+
+export interface DiscoveredDatabase {
+  name: string;
+  size: string;
+}
 
 export interface PostgresInstance {
   id: string;
@@ -20,9 +26,20 @@ export interface PostgresInstance {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  discovered_databases: DiscoveredDatabase[] | null;
 }
 
-export type CreateInstanceData = Omit<PostgresInstance, 'id' | 'created_at' | 'updated_at' | 'created_by' | 'last_checked' | 'version' | 'status'>;
+export type CreateInstanceData = Omit<PostgresInstance, 'id' | 'created_at' | 'updated_at' | 'created_by' | 'last_checked' | 'version' | 'status' | 'discovered_databases'>;
+
+// Transform raw DB data to typed PostgresInstance
+function transformInstance(raw: Record<string, unknown>): PostgresInstance {
+  return {
+    ...raw,
+    discovered_databases: Array.isArray(raw.discovered_databases) 
+      ? (raw.discovered_databases as unknown as DiscoveredDatabase[])
+      : null,
+  } as PostgresInstance;
+}
 
 export function useInstances() {
   return useQuery({
@@ -34,7 +51,7 @@ export function useInstances() {
         .order('created_at', { ascending: false });
       
       if (error) throw error;
-      return data as PostgresInstance[];
+      return (data || []).map(transformInstance);
     },
   });
 }
@@ -49,7 +66,16 @@ export function useCreateInstance() {
       const { data, error } = await supabase
         .from('postgres_instances')
         .insert({
-          ...instance,
+          name: instance.name,
+          host: instance.host,
+          port: instance.port,
+          database: instance.database,
+          username: instance.username,
+          password: instance.password,
+          ssl_enabled: instance.ssl_enabled,
+          environment: instance.environment,
+          criticality: instance.criticality,
+          client_tag: instance.client_tag,
           created_by: user?.id,
           status: 'unknown',
         })
@@ -73,10 +99,13 @@ export function useUpdateInstance() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async ({ id, ...updates }: Partial<PostgresInstance> & { id: string }) => {
+    mutationFn: async ({ id, discovered_databases, ...updates }: Partial<PostgresInstance> & { id: string }) => {
+      // Prepare update payload without the discovered_databases (it's managed by edge function)
+      const updatePayload: Record<string, unknown> = { ...updates };
+      
       const { data, error } = await supabase
         .from('postgres_instances')
-        .update(updates)
+        .update(updatePayload)
         .eq('id', id)
         .select()
         .single();

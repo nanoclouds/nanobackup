@@ -343,6 +343,7 @@ export type Database = {
           created_by: string | null
           criticality: Database["public"]["Enums"]["criticality_level"] | null
           database: string
+          discovered_databases: Json | null
           environment: Database["public"]["Enums"]["environment_type"]
           host: string
           id: string
@@ -363,6 +364,7 @@ export type Database = {
           created_by?: string | null
           criticality?: Database["public"]["Enums"]["criticality_level"] | null
           database: string
+          discovered_databases?: Json | null
           environment?: Database["public"]["Enums"]["environment_type"]
           host: string
           id?: string
@@ -383,6 +385,7 @@ export type Database = {
           created_by?: string | null
           criticality?: Database["public"]["Enums"]["criticality_level"] | null
           database?: string
+          discovered_databases?: Json | null
           environment?: Database["public"]["Enums"]["environment_type"]
           host?: string
           id?: string
