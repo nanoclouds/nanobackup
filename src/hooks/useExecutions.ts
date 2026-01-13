@@ -449,15 +449,26 @@ export function useRunBackup() {
                 dbLogs += `[${new Date().toISOString()}] Enviando arquivo para: ${ftpPath}\n`;
                 
                 try {
+                  // Generate simulated backup content based on format
+                  // In production, this would be replaced by actual pg_dump output from a backup worker
+                  const backupTimestamp = new Date().toISOString();
+                  const backupHeader = backupFormat === 'sql' 
+                    ? `-- PostgreSQL SQL Dump\n-- Database: ${db.name}\n-- Host: ${job.postgres_instances?.host}\n-- Created: ${backupTimestamp}\n-- Format: Plain SQL\n-- Compression: ${compressionLabel}\n\n`
+                    : `-- PostgreSQL Custom Format Backup\n-- Database: ${db.name}\n-- Created: ${backupTimestamp}\n`;
+                  
+                  // Create a more realistic file content based on format
+                  const simulatedContent = backupFormat === 'sql'
+                    ? `${backupHeader}SET statement_timeout = 0;\nSET lock_timeout = 0;\nSET idle_in_transaction_session_timeout = 0;\nSET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\nSELECT pg_catalog.set_config('search_path', '', false);\nSET check_function_bodies = false;\nSET xmloption = content;\nSET client_min_messages = warning;\nSET row_security = off;\n\n-- NOTE: This is a SIMULATED backup file.\n-- To enable real backups, configure a backup worker with pg_dump access.\n-- Instance: ${instanceName}\n-- Size: ${(fileSize / 1024 / 1024).toFixed(2)} MB\n`
+                    : `${backupHeader}-- Binary custom format data would be here\n-- NOTE: This is a SIMULATED backup file.\n`;
+                  
                   // Call edge function to upload file
                   const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
                     body: {
                       destinationId: destination.id,
                       fileName: fileName,
                       remotePath: ftpPath,
-                      // In a real scenario, this would be the actual backup data
-                      // For now, we send a placeholder that represents the backup
-                      fileContent: `-- PostgreSQL Backup: ${db.name}\n-- Created: ${new Date().toISOString()}\n-- Instance: ${instanceName}\n-- Format: ${formatLabel}\n-- Compression: ${compressionLabel}\n\n-- This is a simulated backup file.\n-- In production, this would contain the actual pg_dump output.\n`
+                      fileContent: simulatedContent,
+                      isSimulated: true // Flag to indicate this is simulated
                     }
                   });
                   
