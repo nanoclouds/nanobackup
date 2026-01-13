@@ -398,37 +398,82 @@ export function useRunBackup() {
           let backupSuccess = false;
           
           try {
-            // Call the real backup generation function
+            // Call the real backup generation function with chunked approach
             allLogs += `[${new Date().toISOString()}] Gerando backup real do banco ${db.name}...\n`;
             dbLogs += `[${dbStartTime.toISOString()}] Conectando ao PostgreSQL: ${job.postgres_instances?.host}\n`;
             dbLogs += `[${new Date().toISOString()}] Gerando dump do banco: ${db.name}\n`;
             
-            const { data: backupResult, error: backupError } = await supabase.functions.invoke('generate-backup', {
+            // First call to get total chunks info
+            const { data: firstChunk, error: firstError } = await supabase.functions.invoke('generate-backup', {
               body: {
                 instanceId: job.postgres_instances?.id,
                 databaseName: db.name,
                 format: backupFormat,
-                includeData: true
+                includeData: true,
+                chunkIndex: 0
               }
             });
             
-            if (backupError) {
-              throw new Error(backupError.message);
+            if (firstError) {
+              throw new Error(firstError.message);
             }
             
-            if (!backupResult?.success) {
-              throw new Error(backupResult?.message || 'Falha ao gerar backup');
+            if (!firstChunk?.success) {
+              throw new Error(firstChunk?.message || 'Falha ao gerar backup');
             }
             
-            backupContent = backupResult.content;
-            fileSize = backupResult.stats?.size || backupContent.length;
+            // Start with first chunk content
+            const contentParts: string[] = [firstChunk.content];
+            let totalTablesProcessed = firstChunk.stats?.tables || 0;
+            let totalRowsProcessed = firstChunk.stats?.rows || 0;
+            const totalChunks = firstChunk.chunk?.total || 1;
+            
+            dbLogs += `[${new Date().toISOString()}] Chunk 1/${totalChunks}: ${firstChunk.stats?.tables} tabelas, ${firstChunk.stats?.rows} registros\n`;
+            allLogs += `[${new Date().toISOString()}] Chunk 1/${totalChunks} processado\n`;
+            
+            // Process remaining chunks if any
+            if (totalChunks > 1) {
+              allLogs += `[${new Date().toISOString()}] Banco grande detectado: ${totalChunks} chunks necessários\n`;
+              
+              for (let chunkIdx = 1; chunkIdx < totalChunks; chunkIdx++) {
+                dbLogs += `[${new Date().toISOString()}] Processando chunk ${chunkIdx + 1}/${totalChunks}...\n`;
+                
+                const { data: chunkResult, error: chunkError } = await supabase.functions.invoke('generate-backup', {
+                  body: {
+                    instanceId: job.postgres_instances?.id,
+                    databaseName: db.name,
+                    format: backupFormat,
+                    includeData: true,
+                    chunkIndex: chunkIdx
+                  }
+                });
+                
+                if (chunkError) {
+                  throw new Error(`Chunk ${chunkIdx + 1} falhou: ${chunkError.message}`);
+                }
+                
+                if (!chunkResult?.success) {
+                  throw new Error(chunkResult?.message || `Chunk ${chunkIdx + 1} falhou`);
+                }
+                
+                contentParts.push(chunkResult.content);
+                totalTablesProcessed += chunkResult.stats?.tables || 0;
+                totalRowsProcessed += chunkResult.stats?.rows || 0;
+                
+                dbLogs += `[${new Date().toISOString()}] Chunk ${chunkIdx + 1}/${totalChunks}: ${chunkResult.stats?.tables} tabelas, ${chunkResult.stats?.rows} registros\n`;
+                allLogs += `[${new Date().toISOString()}] Chunk ${chunkIdx + 1}/${totalChunks} processado\n`;
+              }
+            }
+            
+            // Combine all chunks
+            backupContent = contentParts.join('');
+            fileSize = backupContent.length;
             
             dbLogs += `[${new Date().toISOString()}] ✓ Backup gerado com sucesso\n`;
-            dbLogs += `[${new Date().toISOString()}] Tabelas: ${backupResult.stats?.tables || 0} | Registros: ${backupResult.stats?.rows || 0}\n`;
+            dbLogs += `[${new Date().toISOString()}] Tabelas: ${totalTablesProcessed} | Registros: ${totalRowsProcessed}\n`;
             dbLogs += `[${new Date().toISOString()}] Tamanho: ${(fileSize / 1024).toFixed(2)} KB\n`;
-            dbLogs += `[${new Date().toISOString()}] Tempo de geração: ${backupResult.stats?.duration || 0}ms\n`;
             
-            allLogs += `[${new Date().toISOString()}] ✓ Dump gerado: ${backupResult.stats?.tables} tabelas, ${backupResult.stats?.rows} registros\n`;
+            allLogs += `[${new Date().toISOString()}] ✓ Dump completo: ${totalTablesProcessed} tabelas, ${totalRowsProcessed} registros\n`;
             
             // Calculate checksum of the backup content
             const encoder = new TextEncoder();
