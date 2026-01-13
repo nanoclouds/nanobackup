@@ -1,10 +1,11 @@
 import { useBackupProgress } from '@/contexts/BackupProgressContext';
 import { Progress } from '@/components/ui/progress';
-import { Database, Upload, Package, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Database, Upload, Package, CheckCircle2, XCircle, Loader2, StopCircle, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export function BackupProgressBar() {
-  const { progress } = useBackupProgress();
+  const { progress, cancelBackup, isCancelled } = useBackupProgress();
 
   if (!progress) return null;
 
@@ -20,6 +21,8 @@ export function BackupProgressBar() {
 
   const overallProgress = Math.min(Math.round(dbProgress), 100);
 
+  const isRunning = !['done', 'error', 'cancelled'].includes(progress.phase);
+
   const getPhaseIcon = () => {
     switch (progress.phase) {
       case 'metadata':
@@ -34,6 +37,8 @@ export function BackupProgressBar() {
         return <CheckCircle2 className="h-4 w-4 text-green-500" />;
       case 'error':
         return <XCircle className="h-4 w-4 text-red-500" />;
+      case 'cancelled':
+        return <AlertTriangle className="h-4 w-4 text-yellow-500" />;
       default:
         return <Loader2 className="h-4 w-4 animate-spin" />;
     }
@@ -53,6 +58,8 @@ export function BackupProgressBar() {
         return 'Concluído!';
       case 'error':
         return 'Erro';
+      case 'cancelled':
+        return 'Cancelado';
       default:
         return 'Processando...';
     }
@@ -62,6 +69,10 @@ export function BackupProgressBar() {
   const minutes = Math.floor(elapsed / 60);
   const seconds = elapsed % 60;
   const elapsedStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+
+  const handleCancel = () => {
+    cancelBackup();
+  };
 
   return (
     <div className="fixed bottom-4 right-4 z-50 w-96 bg-card border border-border rounded-lg shadow-lg p-4 animate-in slide-in-from-bottom-5">
@@ -74,6 +85,17 @@ export function BackupProgressBar() {
         <span className="text-xs text-muted-foreground">
           {elapsedStr}
         </span>
+        {isRunning && !isCancelled && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground hover:text-destructive"
+            onClick={handleCancel}
+            title="Parar backup"
+          >
+            <StopCircle className="h-4 w-4" />
+          </Button>
+        )}
       </div>
 
       {/* Progress bar */}
@@ -82,7 +104,9 @@ export function BackupProgressBar() {
         className={cn(
           "h-2 mb-2",
           progress.phase === 'error' && "[&>div]:bg-destructive",
-          progress.phase === 'done' && "[&>div]:bg-green-500"
+          progress.phase === 'done' && "[&>div]:bg-green-500",
+          progress.phase === 'cancelled' && "[&>div]:bg-yellow-500",
+          isCancelled && isRunning && "[&>div]:bg-yellow-500"
         )}
       />
 
@@ -98,7 +122,12 @@ export function BackupProgressBar() {
       </div>
 
       {/* Chunk progress */}
-      {progress.phase === 'generating' || progress.phase === 'uploading' ? (
+      {isCancelled && isRunning ? (
+        <div className="mt-2 text-xs text-yellow-500 flex items-center gap-1">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          <span>Cancelando...</span>
+        </div>
+      ) : progress.phase === 'generating' || progress.phase === 'uploading' ? (
         <div className="mt-2 text-xs text-muted-foreground">
           <span className="flex items-center gap-1">
             {getPhaseLabel()} Chunk {progress.currentChunk}/{progress.totalChunks}
@@ -111,7 +140,7 @@ export function BackupProgressBar() {
       )}
 
       {/* Message */}
-      {progress.message && (
+      {progress.message && !isCancelled && (
         <p className="mt-2 text-xs text-muted-foreground truncate">
           {progress.message}
         </p>

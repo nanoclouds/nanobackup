@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode, useCallback } from 'react';
+import { createContext, useContext, useState, ReactNode, useCallback, useRef } from 'react';
 
 export interface BackupProgress {
   executionId: string;
@@ -8,7 +8,7 @@ export interface BackupProgress {
   totalChunks: number;
   currentDatabase: number;
   totalDatabases: number;
-  phase: 'metadata' | 'generating' | 'uploading' | 'compressing' | 'done' | 'error';
+  phase: 'metadata' | 'generating' | 'uploading' | 'compressing' | 'done' | 'error' | 'cancelled';
   message: string;
   startedAt: Date;
 }
@@ -18,12 +18,18 @@ interface BackupProgressContextType {
   setProgress: (progress: BackupProgress | null) => void;
   updateProgress: (update: Partial<BackupProgress>) => void;
   clearProgress: () => void;
+  isCancelled: boolean;
+  cancelBackup: () => void;
+  resetCancellation: () => void;
+  checkCancelled: () => boolean;
 }
 
 const BackupProgressContext = createContext<BackupProgressContextType | undefined>(undefined);
 
 export function BackupProgressProvider({ children }: { children: ReactNode }) {
   const [progress, setProgressState] = useState<BackupProgress | null>(null);
+  const cancelledRef = useRef(false);
+  const [isCancelled, setIsCancelled] = useState(false);
 
   const setProgress = useCallback((progress: BackupProgress | null) => {
     setProgressState(progress);
@@ -37,8 +43,31 @@ export function BackupProgressProvider({ children }: { children: ReactNode }) {
     setProgressState(null);
   }, []);
 
+  const cancelBackup = useCallback(() => {
+    cancelledRef.current = true;
+    setIsCancelled(true);
+  }, []);
+
+  const resetCancellation = useCallback(() => {
+    cancelledRef.current = false;
+    setIsCancelled(false);
+  }, []);
+
+  const checkCancelled = useCallback(() => {
+    return cancelledRef.current;
+  }, []);
+
   return (
-    <BackupProgressContext.Provider value={{ progress, setProgress, updateProgress, clearProgress }}>
+    <BackupProgressContext.Provider value={{ 
+      progress, 
+      setProgress, 
+      updateProgress, 
+      clearProgress,
+      isCancelled,
+      cancelBackup,
+      resetCancellation,
+      checkCancelled
+    }}>
       {children}
     </BackupProgressContext.Provider>
   );
