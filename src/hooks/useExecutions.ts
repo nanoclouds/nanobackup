@@ -11,6 +11,7 @@ export interface DatabaseBackup {
   file_name: string | null;
   file_size: number | null;
   checksum: string | null;
+  storage_path: string | null;
   started_at: string;
   completed_at: string | null;
   duration: number | null;
@@ -191,12 +192,39 @@ export function useUpdateExecution() {
   });
 }
 
-// Generate file name with pattern: database_name_YYYYMMDD_HHmmss.dump
-function generateBackupFileName(databaseName: string, timestamp: Date): string {
+// Generate file name with pattern: database_name_YYYYMMDD_HHmmss.dump.gz
+function generateBackupFileName(
+  databaseName: string, 
+  timestamp: Date, 
+  backupFormat: 'custom' | 'sql' = 'custom',
+  compression: 'gzip' | 'zstd' | 'none' = 'gzip'
+): string {
   const dateStr = format(timestamp, 'yyyyMMdd_HHmmss');
   // Sanitize database name for file system
   const safeName = databaseName.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return `${safeName}_${dateStr}.dump`;
+  
+  // Determine file extension based on format and compression
+  let extension = backupFormat === 'custom' ? 'dump' : 'sql';
+  if (compression === 'gzip') {
+    extension += '.gz';
+  } else if (compression === 'zstd') {
+    extension += '.zst';
+  }
+  
+  return `${safeName}_${dateStr}.${extension}`;
+}
+
+// Generate full FTP path
+function generateFtpPath(
+  baseDirectory: string,
+  instanceName: string,
+  fileName: string,
+  timestamp: Date
+): string {
+  const dateFolder = format(timestamp, 'yyyy/MM/dd');
+  const sanitizedInstance = instanceName.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const basePath = baseDirectory.endsWith('/') ? baseDirectory.slice(0, -1) : baseDirectory;
+  return `${basePath}/${sanitizedInstance}/${dateFolder}/${fileName}`;
 }
 
 // Default databases if none discovered (fallback)
@@ -217,12 +245,14 @@ export function useRunBackup() {
       const { jobId, parentExecutionId, retryCount = 0 } = params;
       const startTime = new Date();
       
-      // First, get the job with instance details to fetch discovered databases
+      // First, get the job with instance and destination details
       const { data: job, error: jobError } = await supabase
         .from('backup_jobs')
         .select(`
           id,
           name,
+          format,
+          compression,
           max_retries,
           retry_delay_minutes,
           postgres_instances (
@@ -230,6 +260,15 @@ export function useRunBackup() {
             name, 
             host,
             discovered_databases
+          ),
+          ftp_destinations (
+            id,
+            name,
+            protocol,
+            host,
+            port,
+            base_directory,
+            username
           )
         `)
         .eq('id', jobId)
@@ -288,10 +327,26 @@ export function useRunBackup() {
         const isRetry = retryCount > 0;
         const logPrefix = isRetry ? `[RETRY ${retryCount}] ` : '';
         
+        // Get destination and format info
+        const destination = job.ftp_destinations;
+        const backupFormat = job.format || 'custom';
+        const compression = job.compression || 'gzip';
+        const instanceName = job.postgres_instances?.name || 'unknown';
+        
+        // Compression labels for logs
+        const compressionLabel = compression === 'gzip' ? 'GZIP' : compression === 'zstd' ? 'ZSTD' : 'Sem compressão';
+        const formatLabel = backupFormat === 'custom' ? 'Custom (-Fc)' : 'SQL Plain Text';
+        
         let allLogs = `[${startTime.toISOString()}] ${logPrefix}Iniciando backup de todos os bancos da instância...\n`;
         allLogs += `[${new Date().toISOString()}] Conectando à instância ${job.postgres_instances?.name} (${job.postgres_instances?.host})...\n`;
         allLogs += `[${new Date().toISOString()}] ${databases.length} bancos de dados encontrados\n`;
-        allLogs += `[${new Date().toISOString()}] Formato: pg_dump compatível com PostgreSQL 18.1\n`;
+        allLogs += `[${new Date().toISOString()}] Formato: ${formatLabel} | Compressão: ${compressionLabel}\n`;
+        
+        if (destination) {
+          allLogs += `[${new Date().toISOString()}] Destino FTP: ${destination.protocol.toUpperCase()}://${destination.username}@${destination.host}:${destination.port}\n`;
+          allLogs += `[${new Date().toISOString()}] Diretório base: ${destination.base_directory}\n`;
+        }
+        
         if (isRetry) {
           allLogs += `[${new Date().toISOString()}] Esta é a tentativa ${retryCount} de ${job.max_retries}\n`;
         }
@@ -326,6 +381,7 @@ export function useRunBackup() {
           const dbStartTime = new Date();
           const backupId = dbBackupIds[i];
           
+          allLogs += `[${dbStartTime.toISOString()}] ─────────────────────────────────────────\n`;
           allLogs += `[${dbStartTime.toISOString()}] Processando banco: ${db.name}\n`;
           
           // Simulate processing time (1-3 seconds per database)
@@ -335,18 +391,45 @@ export function useRunBackup() {
           const dbEndTime = new Date();
           const duration = Math.floor((dbEndTime.getTime() - dbStartTime.getTime()) / 1000);
           const fileSize = Math.floor(Math.random() * 200000000) + 10000000; // 10MB - 210MB
-          const fileName = generateBackupFileName(db.name, dbStartTime);
+          const fileName = generateBackupFileName(db.name, dbStartTime, backupFormat, compression);
+          const ftpPath = destination 
+            ? generateFtpPath(destination.base_directory, instanceName, fileName, dbStartTime)
+            : `/backups/${fileName}`;
           
           if (success) {
             successCount++;
             totalSize += fileSize;
             
-            const dbLogs = `[${dbStartTime.toISOString()}] pg_dump -Fc -Z 9 --format=custom ${db.name}\n` +
-              `[${new Date().toISOString()}] Comprimindo backup...\n` +
-              `[${dbEndTime.toISOString()}] Enviando para destino: ${fileName}\n` +
-              `[${dbEndTime.toISOString()}] Backup concluído: ${(fileSize / 1024 / 1024).toFixed(2)} MB\n`;
+            const pgDumpCmd = backupFormat === 'custom' 
+              ? `pg_dump -Fc -Z 9 --format=custom ${db.name}`
+              : `pg_dump --format=plain ${db.name}`;
             
-            allLogs += `[${dbEndTime.toISOString()}] ✓ ${db.name} -> ${fileName} (${(fileSize / 1024 / 1024).toFixed(2)} MB)\n`;
+            const compressionStep = compression === 'gzip' 
+              ? `gzip -9 > ${fileName}`
+              : compression === 'zstd'
+                ? `zstd -19 > ${fileName}`
+                : '';
+            
+            let dbLogs = `[${dbStartTime.toISOString()}] Executando: ${pgDumpCmd}\n`;
+            if (compression !== 'none') {
+              dbLogs += `[${new Date().toISOString()}] Comprimindo com ${compressionLabel}...\n`;
+            }
+            dbLogs += `[${new Date().toISOString()}] Arquivo gerado: ${fileName} (${(fileSize / 1024 / 1024).toFixed(2)} MB)\n`;
+            
+            if (destination) {
+              dbLogs += `[${new Date().toISOString()}] Conectando ao destino ${destination.protocol.toUpperCase()}://${destination.host}...\n`;
+              dbLogs += `[${new Date().toISOString()}] Enviando arquivo para: ${ftpPath}\n`;
+              dbLogs += `[${dbEndTime.toISOString()}] ✓ Upload concluído com sucesso\n`;
+            }
+            
+            dbLogs += `[${dbEndTime.toISOString()}] Backup concluído em ${duration}s\n`;
+            
+            allLogs += `[${new Date().toISOString()}] Executando pg_dump para ${db.name}...\n`;
+            if (compression !== 'none') {
+              allLogs += `[${new Date().toISOString()}] Comprimindo com ${compressionLabel}...\n`;
+            }
+            allLogs += `[${new Date().toISOString()}] Enviando para FTP: ${ftpPath}\n`;
+            allLogs += `[${dbEndTime.toISOString()}] ✓ ${db.name} -> ${ftpPath} (${(fileSize / 1024 / 1024).toFixed(2)} MB)\n`;
             
             await supabase
               .from('execution_database_backups')
@@ -354,6 +437,7 @@ export function useRunBackup() {
                 status: 'success',
                 file_name: fileName,
                 file_size: fileSize,
+                storage_path: ftpPath,
                 checksum: `sha256:${Math.random().toString(36).substring(2, 15)}${Math.random().toString(36).substring(2, 15)}`,
                 completed_at: dbEndTime.toISOString(),
                 duration,
@@ -364,6 +448,7 @@ export function useRunBackup() {
             failedCount++;
             const errorMsg = 'Erro ao executar pg_dump: connection reset by peer';
             
+            allLogs += `[${new Date().toISOString()}] Executando pg_dump para ${db.name}...\n`;
             allLogs += `[${dbEndTime.toISOString()}] ✗ ${db.name} - FALHOU: ${errorMsg}\n`;
             
             await supabase
@@ -373,7 +458,7 @@ export function useRunBackup() {
                 completed_at: dbEndTime.toISOString(),
                 duration,
                 error_message: errorMsg,
-                logs: `[${dbStartTime.toISOString()}] pg_dump -Fc -Z 9 --format=custom ${db.name}\n[${dbEndTime.toISOString()}] ERROR: ${errorMsg}\n`,
+                logs: `[${dbStartTime.toISOString()}] Executando: pg_dump -Fc -Z 9 --format=custom ${db.name}\n[${dbEndTime.toISOString()}] ERROR: ${errorMsg}\n`,
               })
               .eq('id', backupId);
           }

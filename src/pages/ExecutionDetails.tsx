@@ -203,6 +203,26 @@ function DatabaseBackupRow({ backup }: { backup: DatabaseBackup }) {
         <TableRow className="border-border bg-muted/30">
           <TableCell colSpan={6} className="p-4">
             <div className="space-y-3">
+              {backup.storage_path && (
+                <div className="flex items-start gap-2">
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">Caminho FTP:</span>
+                  <code className="text-xs bg-muted px-2 py-1 rounded break-all font-mono">
+                    {backup.storage_path}
+                  </code>
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    className="h-6 w-6 shrink-0"
+                    onClick={() => {
+                      navigator.clipboard.writeText(backup.storage_path!);
+                      toast.success('Caminho copiado!');
+                    }}
+                  >
+                    <Copy className="h-3 w-3" />
+                  </Button>
+                </div>
+              )}
+
               {backup.error_message && (
                 <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3">
                   <p className="text-sm font-medium text-destructive">Erro:</p>
