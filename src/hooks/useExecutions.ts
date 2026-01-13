@@ -468,7 +468,10 @@ export function useRunBackup() {
                   if (uploadResult?.success) {
                     remoteChecksum = uploadResult.checksum || localChecksum;
                     actualFtpPath = uploadResult.remotePath || ftpPath;
+                    const protocol = uploadResult.protocol?.toUpperCase() || 'FTP';
+                    const authMethod = uploadResult.authMethod === 'ssh-key' ? 'chave SSH' : 'senha';
                     
+                    dbLogs += `[${new Date().toISOString()}] Protocolo: ${protocol} | Autenticação: ${authMethod}\n`;
                     dbLogs += `[${new Date().toISOString()}] Upload concluído em ${uploadResult.duration}ms\n`;
                     dbLogs += `[${new Date().toISOString()}] Arquivo salvo em: ${actualFtpPath}\n`;
                     dbLogs += `[${new Date().toISOString()}] Verificando integridade...\n`;
