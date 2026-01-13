@@ -136,6 +136,7 @@ serve(async (req) => {
     const sqlParts: string[] = [];
     let rowsProcessedInChunk = 0;
     let tablesProcessedInChunk = 0;
+    let lastProcessedTableName = '';
     
     // Next cursor position (will be updated as we process)
     let nextCursor: ChunkCursor | null = null;
@@ -167,6 +168,7 @@ SET session_replication_role = 'replica';
     // Process tables starting from cursor position
     for (let tableIdx = currentCursor.tableIndex; tableIdx < totalTables; tableIdx++) {
       const tableName = allTables[tableIdx];
+      lastProcessedTableName = tableName;
       const tableRowCount = tableCounts[tableName];
       const tableStartTime = Date.now();
       
@@ -340,6 +342,7 @@ SET session_replication_role = 'origin';
           format: 'sql',
           totalTables,
           totalRows,
+          currentTableName: lastProcessedTableName,
         },
         pagination: {
           isFirstChunk,
