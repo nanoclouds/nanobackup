@@ -329,12 +329,16 @@ serve(async (req) => {
 
     const latency = Date.now() - startTime;
 
-    // Update destination status
+    // Update destination status and write permission
+    const writePermission = details.writePermission === true ? true : 
+                            details.writePermission === false ? false : null;
+    
     await supabaseClient
       .from("ftp_destinations")
       .update({ 
         status: success ? "online" : "offline", 
-        last_tested: new Date().toISOString()
+        last_tested: new Date().toISOString(),
+        write_permission: writePermission
       })
       .eq("id", destinationId);
 

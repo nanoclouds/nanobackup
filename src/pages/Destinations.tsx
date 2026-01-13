@@ -11,7 +11,7 @@ import { DestinationFormDialog } from '@/components/destinations/DestinationForm
 import { DeleteDestinationDialog } from '@/components/destinations/DeleteDestinationDialog';
 import { formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { Plus, Search, MoreVertical, TestTube, Edit, Trash2, FolderSync, Server, Lock, Loader2 } from 'lucide-react';
+import { Plus, Search, MoreVertical, TestTube, Edit, Trash2, FolderSync, Server, Lock, Loader2, CheckCircle2, XCircle, HelpCircle } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 
 const protocolLabels = { ftp: 'FTP', ftps: 'FTPS', sftp: 'SFTP' };
@@ -85,7 +85,27 @@ export default function Destinations() {
                 {dest.passive_mode && <Badge variant="muted" className="text-xs">Modo Passivo</Badge>}
               </div>
               <div className="mt-4 flex items-center justify-between border-t border-border pt-4">
-                <StatusBadge status={dest.status} size="sm" />
+                <div className="flex items-center gap-2">
+                  <StatusBadge status={dest.status} size="sm" />
+                  {dest.write_permission === true && (
+                    <div className="flex items-center gap-1 text-success" title="Permissão de escrita verificada">
+                      <CheckCircle2 className="h-4 w-4" />
+                      <span className="text-xs">Escrita OK</span>
+                    </div>
+                  )}
+                  {dest.write_permission === false && (
+                    <div className="flex items-center gap-1 text-destructive" title="Sem permissão de escrita">
+                      <XCircle className="h-4 w-4" />
+                      <span className="text-xs">Sem Escrita</span>
+                    </div>
+                  )}
+                  {dest.write_permission === null && dest.last_tested && (
+                    <div className="flex items-center gap-1 text-muted-foreground" title="Permissão de escrita não verificada">
+                      <HelpCircle className="h-4 w-4" />
+                      <span className="text-xs">Escrita N/A</span>
+                    </div>
+                  )}
+                </div>
                 <span className="text-xs text-muted-foreground">Testado {dest.last_tested ? formatDistanceToNow(new Date(dest.last_tested), { addSuffix: true, locale: ptBR }) : 'nunca'}</span>
               </div>
             </div>
