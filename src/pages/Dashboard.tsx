@@ -3,6 +3,9 @@ import { StatsCard } from '@/components/dashboard/StatsCard';
 import { RecentExecutions } from '@/components/dashboard/RecentExecutions';
 import { JobsOverview } from '@/components/dashboard/JobsOverview';
 import { SuccessRateChart } from '@/components/dashboard/SuccessRateChart';
+import { BackupsByInstanceChart } from '@/components/dashboard/BackupsByInstanceChart';
+import { BackupsByDestinationChart } from '@/components/dashboard/BackupsByDestinationChart';
+import { ExecutionTrendChart } from '@/components/dashboard/ExecutionTrendChart';
 import { useDashboardStats } from '@/hooks/useDashboardStats';
 import { useExecutions } from '@/hooks/useExecutions';
 import { useJobs } from '@/hooks/useJobs';
@@ -70,52 +73,59 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Chart and Status */}
+      {/* Charts Row 1 - Success Rate and Trend */}
       <div className="mb-6 grid gap-6 lg:grid-cols-2">
         <SuccessRateChart />
-        
-        {/* Quick Status */}
-        <div className="rounded-lg border border-border bg-card p-6">
-          <h3 className="mb-4 text-lg font-semibold text-foreground">Status do Sistema</h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between rounded-lg bg-secondary/50 p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success/10">
-                  <TrendingUp className="h-5 w-5 text-success" />
-                </div>
-                <div>
-                  <p className="font-medium text-foreground">Backups Concluídos</p>
-                  <p className="text-sm text-muted-foreground">Hoje</p>
-                </div>
-              </div>
-              <p className="text-2xl font-bold text-success">{stats?.todaySuccessful ?? 0}</p>
-            </div>
+        <ExecutionTrendChart />
+      </div>
 
-            <div className="flex items-center justify-between rounded-lg bg-secondary/50 p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-warning/10">
-                  <Loader2 className={`h-5 w-5 text-warning ${stats?.runningJobs ? 'animate-spin' : ''}`} />
-                </div>
-                <div>
-                  <p className="font-medium text-foreground">Em Execução</p>
-                  <p className="text-sm text-muted-foreground">Jobs ativos</p>
-                </div>
-              </div>
-              <p className="text-2xl font-bold text-warning">{stats?.runningJobs ?? 0}</p>
-            </div>
+      {/* Charts Row 2 - By Instance and Destination */}
+      <div className="mb-6 grid gap-6 lg:grid-cols-2">
+        <BackupsByInstanceChart />
+        <BackupsByDestinationChart />
+      </div>
 
-            <div className="flex items-center justify-between rounded-lg bg-secondary/50 p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-destructive/10">
-                  <XCircle className="h-5 w-5 text-destructive" />
-                </div>
-                <div>
-                  <p className="font-medium text-foreground">Falhas</p>
-                  <p className="text-sm text-muted-foreground">Hoje</p>
-                </div>
+      {/* Quick Status */}
+      <div className="mb-6 rounded-lg border border-border bg-card p-6">
+        <h3 className="mb-4 text-lg font-semibold text-foreground">Status do Sistema</h3>
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="flex items-center justify-between rounded-lg bg-secondary/50 p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success/10">
+                <TrendingUp className="h-5 w-5 text-success" />
               </div>
-              <p className="text-2xl font-bold text-destructive">{stats?.todayFailed ?? 0}</p>
+              <div>
+                <p className="font-medium text-foreground">Backups Concluídos</p>
+                <p className="text-sm text-muted-foreground">Hoje</p>
+              </div>
             </div>
+            <p className="text-2xl font-bold text-success">{stats?.todaySuccessful ?? 0}</p>
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg bg-secondary/50 p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-warning/10">
+                <Loader2 className={`h-5 w-5 text-warning ${stats?.runningJobs ? 'animate-spin' : ''}`} />
+              </div>
+              <div>
+                <p className="font-medium text-foreground">Em Execução</p>
+                <p className="text-sm text-muted-foreground">Jobs ativos</p>
+              </div>
+            </div>
+            <p className="text-2xl font-bold text-warning">{stats?.runningJobs ?? 0}</p>
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg bg-secondary/50 p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-destructive/10">
+                <XCircle className="h-5 w-5 text-destructive" />
+              </div>
+              <div>
+                <p className="font-medium text-foreground">Falhas</p>
+                <p className="text-sm text-muted-foreground">Hoje</p>
+              </div>
+            </div>
+            <p className="text-2xl font-bold text-destructive">{stats?.todayFailed ?? 0}</p>
           </div>
         </div>
       </div>
