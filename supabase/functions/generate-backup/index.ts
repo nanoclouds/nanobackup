@@ -274,10 +274,12 @@ SET session_replication_role = 'replica';
               
               if (dataResult.rows.length === 0) break;
               
-              // Generate INSERT statements
+              // Generate INSERT statements - build complete statement before adding
               for (const row of dataResult.rows) {
                 const vals = row.map((val, idx) => escapeSqlValueFromText(val, columns[idx].data_type)).join(', ');
-                sqlParts.push(`INSERT INTO public."${tableName}" (${columnNames}) VALUES (${vals});\n`);
+                // Ensure statement is complete and properly terminated
+                const insertStmt = `INSERT INTO public."${tableName}" (${columnNames}) VALUES (${vals});`;
+                sqlParts.push(insertStmt + '\n');
               }
               
               rowsProcessedInChunk += dataResult.rows.length;
@@ -309,8 +311,7 @@ SET session_replication_role = 'replica';
 
     // Add footer only on last chunk
     if (isLastChunk) {
-      sqlParts.push(`
-SET session_replication_role = 'origin';
+      sqlParts.push(`\n\nSET session_replication_role = 'origin';
 
 --
 -- PostgreSQL database dump complete
@@ -318,7 +319,8 @@ SET session_replication_role = 'origin';
 --
 `);
     } else {
-      sqlParts.push(`-- End of chunk (processed ${rowsProcessedInChunk} rows)\n`);
+      // Add clear chunk delimiter to prevent data corruption on append
+      sqlParts.push(`\n-- === END OF CHUNK ${currentCursor.tableIndex}_${currentCursor.rowOffset} ===\n\n`);
     }
 
     await pgClient.end();
