@@ -228,15 +228,16 @@ export function useRunBackupWithProgress(
             const totalRowsInDb = metadata.metadata?.totalRows || 0;
             
             dbLogs += `[${new Date().toISOString()}] ${totalTables} tabelas, ${totalRowsInDb} linhas, ~${estimatedChunks} chunks estimados\n`;
+            dbLogs += `[${new Date().toISOString()}] ⚙️ Modo: Geração completa em memória + envio único\n`;
             
             let totalTablesProcessed = 0;
             let totalRowsProcessed = 0;
-            let totalBytesUploaded = 0;
-            let totalBytesGenerated = 0;
             let chunkCount = 0;
-            const chunkChecksums: string[] = [];
             
-            // Process chunks incrementally until no more data
+            // ===== NOVO: Acumular todo o conteúdo em memória =====
+            const allContentParts: string[] = [];
+            
+            // Process chunks incrementally until no more data - but accumulate in memory
             let cursor: { tableIndex: number; rowOffset: number } | null = null;
             let hasMoreData = true;
             
@@ -247,8 +248,6 @@ export function useRunBackupWithProgress(
               if (checkCancelled && checkCancelled()) {
                 throw new Error('Cancelado pelo usuário');
               }
-              
-              const isFirstChunk = cursor === null;
               
               // Update progress: generating phase
               const currentTableInfo = cursor ? ` [tabela ${cursor.tableIndex + 1}]` : '';
@@ -261,7 +260,7 @@ export function useRunBackupWithProgress(
                 currentDatabase: i + 1,
                 totalDatabases: databases.length,
                 phase: 'generating',
-                message: `Gerando chunk ${chunkCount}${currentTableInfo}... (${totalRowsProcessed}/${totalRowsInDb} linhas)`,
+                message: `Gerando em memória: chunk ${chunkCount}${currentTableInfo}... (${totalRowsProcessed}/${totalRowsInDb} linhas)`,
                 startedAt: startTime,
               });
               
@@ -284,118 +283,95 @@ export function useRunBackupWithProgress(
               const chunkSize = chunkResult.stats?.size || 0;
               const rowsInChunk = chunkResult.stats?.rowsInChunk || 0;
               const currentTableName = chunkResult.stats?.currentTableName || '';
-              const chunkChecksum = chunkResult.stats?.checksum || '';
               
-              // Store chunk checksum for final verification
-              if (chunkChecksum) {
-                chunkChecksums.push(chunkChecksum);
-              }
+              // ===== ACUMULAR em memória =====
+              allContentParts.push(chunkContent);
               
               totalTablesProcessed = chunkResult.stats?.totalTables || totalTablesProcessed;
               totalRowsProcessed += rowsInChunk;
-              totalBytesGenerated += chunkSize;
               
               // Update pagination state
               hasMoreData = chunkResult.pagination?.hasMoreData || false;
               cursor = chunkResult.pagination?.nextCursor || null;
-              const isLastChunk = chunkResult.pagination?.isLastChunk || false;
               
-              // Build table info for progress message
+              // Build table info for log
               const tableInfo = currentTableName ? ` → ${currentTableName}` : '';
-              
-              // Check for cancellation before upload
-              if (checkCancelled && checkCancelled()) {
-                throw new Error('Cancelado pelo usuário');
-              }
-              
-              // Update progress: uploading phase
+              dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB ✓\n`;
+            }
+            
+            // ===== JUNTAR TODO O CONTEÚDO =====
+            const fullBackupContent = allContentParts.join('');
+            const totalBytes = new TextEncoder().encode(fullBackupContent).length;
+            
+            dbLogs += `[${new Date().toISOString()}] ✓ Geração completa: ${totalRowsProcessed} linhas, ${chunkCount} chunks, ${(totalBytes / 1024 / 1024).toFixed(2)} MB\n`;
+            
+            // Calculate final SHA256 checksum
+            const encoder = new TextEncoder();
+            const data = encoder.encode(fullBackupContent);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const finalChecksum = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            
+            dbLogs += `[${new Date().toISOString()}] SHA256: ${finalChecksum.substring(0, 32)}...\n`;
+            
+            // Check for cancellation before upload
+            if (checkCancelled && checkCancelled()) {
+              throw new Error('Cancelado pelo usuário');
+            }
+            
+            // ===== ENVIAR ARQUIVO COMPLETO DE UMA SÓ VEZ =====
+            if (destination) {
               onProgress({
                 executionId: execution.id,
                 jobName: job.name,
                 databaseName: db.name,
                 currentChunk: chunkCount,
-                totalChunks: hasMoreData ? Math.max(estimatedChunks, chunkCount + 1) : chunkCount,
+                totalChunks: chunkCount,
                 currentDatabase: i + 1,
                 totalDatabases: databases.length,
                 phase: 'uploading',
-                message: `Enviando chunk ${chunkCount}${tableInfo}... (${totalRowsProcessed}/${totalRowsInDb} linhas)`,
+                message: `Enviando arquivo completo (${(totalBytes / 1024 / 1024).toFixed(2)} MB)...`,
                 startedAt: startTime,
               });
               
-              // Upload to FTP with retry logic
-              if (destination) {
-                let uploadAttempts = 0;
-                const maxUploadAttempts = 3;
-                let uploadSuccess = false;
-                
-                while (!uploadSuccess && uploadAttempts < maxUploadAttempts) {
-                  uploadAttempts++;
-                  
-                  const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
-                    body: {
-                      destinationId: destination.id,
-                      fileName: fileName.replace('.gz', '').replace('.zst', ''),
-                      remotePath: ftpPath.replace('.gz', '').replace('.zst', ''),
-                      fileContent: chunkContent,
-                      compression: 'none',
-                      appendMode: true,
-                      isFirstChunk,
-                      isLastChunk,
-                      chunkNumber: chunkCount,
-                      expectedSize: chunkSize,
-                    }
-                  });
-                  
-                  if (uploadError || !uploadResult?.success) {
-                    if (uploadAttempts < maxUploadAttempts) {
-                      dbLogs += `[${new Date().toISOString()}] ⚠ Tentativa ${uploadAttempts} falhou, tentando novamente...\n`;
-                      // Wait before retry
-                      await new Promise(resolve => setTimeout(resolve, 1000));
-                      continue;
-                    }
-                    throw new Error(`Upload chunk ${chunkCount} falhou após ${maxUploadAttempts} tentativas: ${uploadError?.message || uploadResult?.message}`);
-                  }
-                  
-                  uploadSuccess = true;
-                  totalBytesUploaded += chunkSize;
-                  
-                  // Verify upload integrity
-                  const uploadedBytes = uploadResult.uploadedBytes || 0;
-                  const uploadChecksum = uploadResult.checksum || '';
-                  
-                  if (uploadedBytes > 0 && uploadedBytes !== chunkSize) {
-                    dbLogs += `[${new Date().toISOString()}] ⚠ Alerta: Tamanho enviado (${uploadedBytes}) ≠ gerado (${chunkSize})\n`;
-                  }
-                  
-                  // Log upload result with checksum info
-                  const remoteInfo = uploadResult.message || '';
-                  const remoteSize = uploadResult.remoteSize || 0;
-                  dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (remoto: ${(remoteSize / 1024).toFixed(2)} KB) ✓ SHA256:${chunkChecksum.substring(0, 8)}...\n`;
+              const uploadFileName = fileName.replace('.gz', '').replace('.zst', '');
+              const uploadPath = ftpPath.replace('.gz', '').replace('.zst', '');
+              
+              // Enviar arquivo completo de uma só vez (NÃO usar appendMode)
+              const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
+                body: {
+                  destinationId: destination.id,
+                  fileName: uploadFileName,
+                  remotePath: uploadPath,
+                  fileContent: fullBackupContent,
+                  compression: 'none',
+                  appendMode: false,  // NOVO: Não usar append, sobrescrever com STOR
+                  isFirstChunk: true,
+                  isLastChunk: true,
                 }
-                
-                // Small delay between chunks to prevent FTP server overload
-                if (hasMoreData) {
-                  await new Promise(resolve => setTimeout(resolve, 100));
-                }
-              } else {
-                dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (sem destino)\n`;
+              });
+              
+              if (uploadError || !uploadResult?.success) {
+                throw new Error(`Upload falhou: ${uploadError?.message || uploadResult?.message}`);
               }
-            }
-            
-            // Verify total bytes integrity
-            if (destination && totalBytesUploaded !== totalBytesGenerated) {
-              dbLogs += `[${new Date().toISOString()}] ⚠ Verificação: Bytes enviados (${totalBytesUploaded}) ≠ gerados (${totalBytesGenerated})\n`;
-            } else if (destination) {
-              dbLogs += `[${new Date().toISOString()}] ✓ Integridade OK: ${totalBytesUploaded} bytes verificados\n`;
-            }
-            
-            dbLogs += `[${new Date().toISOString()}] ✓ Todos os ${totalRowsProcessed} registros processados em ${chunkCount} chunks\n`;
-            
-            fileSize = totalBytesUploaded;
-            
-            // Check for cancellation before compression
-            if (checkCancelled && checkCancelled()) {
-              throw new Error('Cancelado pelo usuário');
+              
+              const remoteSize = uploadResult.remoteSize || 0;
+              const uploadedBytes = uploadResult.uploadedBytes || 0;
+              const uploadChecksum = uploadResult.checksum || '';
+              
+              dbLogs += `[${new Date().toISOString()}] ✓ Upload completo: ${(remoteSize / 1024 / 1024).toFixed(2)} MB no servidor\n`;
+              
+              // Verify integrity
+              if (uploadedBytes !== totalBytes) {
+                dbLogs += `[${new Date().toISOString()}] ⚠ Alerta: Bytes enviados (${uploadedBytes}) ≠ gerados (${totalBytes})\n`;
+              } else {
+                dbLogs += `[${new Date().toISOString()}] ✓ Integridade verificada: ${totalBytes} bytes\n`;
+              }
+              
+              fileSize = remoteSize;
+            } else {
+              dbLogs += `[${new Date().toISOString()}] ⚠ Sem destino configurado\n`;
+              fileSize = totalBytes;
             }
             
             // Compress if needed
@@ -431,16 +407,6 @@ export function useRunBackupWithProgress(
               }
             }
             
-            // Generate final checksum combining all chunk checksums
-            const combinedChecksumData = chunkChecksums.join(':');
-            const encoder = new TextEncoder();
-            const data = encoder.encode(combinedChecksumData);
-            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-            const hashArray = Array.from(new Uint8Array(hashBuffer));
-            const localChecksum = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-            
-            dbLogs += `[${new Date().toISOString()}] Checksum final: SHA256:${localChecksum.substring(0, 16)}...\n`;
-            
             backupSuccess = true;
             
             // Update database backup record
@@ -454,7 +420,7 @@ export function useRunBackupWithProgress(
                 file_name: fileName,
                 file_size: fileSize,
                 storage_path: ftpPath,
-                checksum: `sha256:${localChecksum}`,
+                checksum: `sha256:${finalChecksum}`,
                 completed_at: dbEndTime.toISOString(),
                 duration,
                 logs: dbLogs,
