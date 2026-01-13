@@ -9,11 +9,12 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Chunk configuration for processing large databases
-const TABLES_PER_CHUNK = 5;  // Tables per chunk
-const BATCH_SIZE_ROWS = 500; // Rows per batch insert
-const MAX_STRING_LENGTH = 1000000; // 1MB max string length (for very large text fields)
-const TABLE_TIMEOUT_MS = 30000; // 30 second limit per table
+// Conservative limits to avoid CPU timeout (max ~10s per chunk)
+const TABLES_PER_CHUNK = 1;  // Process 1 table at a time for large tables
+const MAX_ROWS_PER_CHUNK = 5000; // Maximum rows per chunk (pagination)
+const BATCH_SIZE_ROWS = 100; // Rows per batch insert (smaller = less memory)
+const MAX_STRING_LENGTH = 50000; // 50KB max string length
+const TABLE_TIMEOUT_MS = 8000; // 8 second soft limit per table
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -196,22 +197,29 @@ SET session_replication_role = 'replica';
           if (totalRowCount > 0) {
             const columnNames = columns.map(c => `"${c.column_name}"`).join(', ');
             
-            // Fetch ALL rows - no limits
+            // Limit rows per chunk to avoid CPU timeout
+            const rowsToFetch = Math.min(MAX_ROWS_PER_CHUNK, totalRowCount);
             let offset = 0;
             let tableRows = 0;
             
-            sqlParts.push(`-- Data for ${tableName} (${totalRowCount} rows)\n`);
+            if (rowsToFetch < totalRowCount) {
+              sqlParts.push(`-- Data for ${tableName} (${rowsToFetch} of ${totalRowCount} rows in this chunk)\n`);
+              hasMoreData = true;
+            } else {
+              sqlParts.push(`-- Data for ${tableName} (${totalRowCount} rows)\n`);
+            }
             
-            while (offset < totalRowCount) {
-              // Check timeout
-              if (Date.now() - tableStartTime > TABLE_TIMEOUT_MS) {
-                console.log(`Table ${tableName} timeout after ${tableRows} rows`);
-                sqlParts.push(`-- WARNING: Table ${tableName} truncated due to timeout at ${tableRows} rows\n`);
+            while (offset < rowsToFetch) {
+              // Check timeout - stop early if approaching limit
+              const elapsedMs = Date.now() - tableStartTime;
+              if (elapsedMs > TABLE_TIMEOUT_MS) {
+                console.log(`Table ${tableName} soft timeout after ${tableRows} rows (${elapsedMs}ms)`);
+                sqlParts.push(`-- NOTE: Table ${tableName} will continue in next chunk (${tableRows} rows in this chunk)\n`);
                 hasMoreData = true;
                 break;
               }
               
-              const fetchLimit = Math.min(BATCH_SIZE_ROWS, totalRowCount - offset);
+              const fetchLimit = Math.min(BATCH_SIZE_ROWS, rowsToFetch - offset);
               
               // Use queryArray to get raw values without date parsing
               // Also cast all values to text to avoid type parsing issues
