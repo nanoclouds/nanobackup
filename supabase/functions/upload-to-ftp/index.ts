@@ -6,6 +6,38 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Sanitize fileName to prevent path traversal and dangerous characters
+function sanitizeFileName(name: string): string {
+  return name
+    .replace(/[\\/]/g, '_')              // Remove path separators
+    .replace(/\.\./g, '_')               // Remove parent directory references
+    .replace(/[^a-zA-Z0-9_\-\.]/g, '_')  // Allow only safe characters
+    .replace(/^\.+/, '')                  // Remove leading dots
+    .substring(0, 255);                   // Limit length
+}
+
+// Validate that remotePath stays within the base directory
+function validateRemotePath(path: string, baseDir: string): boolean {
+  // Normalize paths
+  const normalizedPath = path
+    .replace(/\/+/g, '/')      // Collapse multiple slashes
+    .replace(/\\/g, '/')       // Normalize Windows-style paths
+    .replace(/\/\.\.\//g, '/') // Remove path traversal sequences
+    .replace(/\/\.\.$/g, '')   // Remove trailing parent references
+    .replace(/^\.\.\//g, '')   // Remove leading parent references
+    .replace(/^\.\.$/g, '');   // Remove standalone parent reference
+  
+  const normalizedBase = baseDir.replace(/\/+/g, '/').replace(/\/$/, '');
+  
+  // Check for remaining path traversal attempts
+  if (normalizedPath.includes('..')) {
+    return false;
+  }
+  
+  // Ensure path starts with base directory
+  return normalizedPath.startsWith(normalizedBase + '/') || normalizedPath === normalizedBase;
+}
+
 // Simple FTP client implementation for Deno
 class SimpleFTPClient {
   private conn: Deno.TcpConn | null = null;
@@ -291,6 +323,9 @@ serve(async (req) => {
       throw new Error("destinationId and fileName are required");
     }
 
+    // Sanitize fileName to prevent path traversal attacks
+    const sanitizedFileName = sanitizeFileName(fileName);
+
     // Fetch destination details
     const { data: destination, error: destError } = await supabaseClient
       .from("ftp_destinations")
@@ -311,11 +346,20 @@ serve(async (req) => {
     let originalSize = 0;
     let compressedSize = 0;
 
-    // Calculate full remote path
+    // Calculate full remote path with validation
     const baseDir = destination.base_directory.endsWith("/") 
       ? destination.base_directory.slice(0, -1) 
       : destination.base_directory;
-    uploadedPath = remotePath || `${baseDir}/${fileName}`;
+    
+    // Validate remotePath if provided, otherwise use sanitized fileName
+    if (remotePath) {
+      if (!validateRemotePath(remotePath, destination.base_directory)) {
+        throw new Error("Invalid remote path: must be within base directory and cannot contain path traversal sequences");
+      }
+      uploadedPath = remotePath;
+    } else {
+      uploadedPath = `${baseDir}/${sanitizedFileName}`;
+    }
 
     // Generate file data
     let data = fileContent 
