@@ -333,9 +333,13 @@ export function useRunBackupWithProgress(
                 }
                 
                 totalBytesUploaded += chunkSize;
+                
+                // Log upload result with remote file info
+                const remoteInfo = uploadResult.message || '';
+                dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB enviados (${remoteInfo})\n`;
+              } else {
+                dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (sem destino)\n`;
               }
-              
-              dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (total: ${totalRowsProcessed}/${totalRowsInDb})\n`;
             }
             
             dbLogs += `[${new Date().toISOString()}] ✓ Todos os ${totalRowsProcessed} registros processados em ${chunkCount} chunks\n`;
