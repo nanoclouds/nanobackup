@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import { useExecutions } from '@/hooks/useExecutions';
+import { useExecutionDetails, DatabaseBackup } from '@/hooks/useExecutions';
 import { format, formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { 
@@ -23,10 +23,25 @@ import {
   AlertCircle,
   Copy,
   Download,
-  RefreshCw
+  RefreshCw,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 function formatBytes(bytes?: number | null): string {
   if (!bytes) return '-';
@@ -54,40 +69,34 @@ function formatDuration(seconds?: number | null): string {
 interface TimelineEvent {
   id: string;
   timestamp: Date;
-  type: 'start' | 'info' | 'success' | 'error' | 'warning';
+  type: 'start' | 'info' | 'success' | 'error' | 'warning' | 'db-success' | 'db-failed';
   message: string;
+  database?: string;
 }
 
-function parseLogsToTimeline(logs?: string | null, startedAt?: string, completedAt?: string | null, status?: string): TimelineEvent[] {
+function parseLogsToTimeline(logs?: string | null): TimelineEvent[] {
   const events: TimelineEvent[] = [];
   
-  // Add start event
-  if (startedAt) {
-    events.push({
-      id: 'start',
-      timestamp: new Date(startedAt),
-      type: 'start',
-      message: 'Backup iniciado',
-    });
-  }
-  
-  // Parse log lines
   if (logs) {
     const lines = logs.split('\n');
     lines.forEach((line, index) => {
+      if (!line.trim()) return;
+      
       const match = line.match(/\[([^\]]+)\]\s*(.*)/);
       if (match) {
         const timestamp = new Date(match[1]);
         const message = match[2];
         
         let type: TimelineEvent['type'] = 'info';
-        if (message.toLowerCase().includes('error') || message.toLowerCase().includes('failed')) {
+        if (message.includes('✓')) {
+          type = 'db-success';
+        } else if (message.includes('✗')) {
+          type = 'db-failed';
+        } else if (message.toLowerCase().includes('error') || message.toLowerCase().includes('falhou')) {
           type = 'error';
-        } else if (message.toLowerCase().includes('success') || message.toLowerCase().includes('completed successfully')) {
+        } else if (message.toLowerCase().includes('concluído') || message.toLowerCase().includes('success')) {
           type = 'success';
-        } else if (message.toLowerCase().includes('warning')) {
-          type = 'warning';
-        } else if (message.toLowerCase().includes('started')) {
+        } else if (message.toLowerCase().includes('iniciando')) {
           type = 'start';
         }
         
@@ -101,17 +110,7 @@ function parseLogsToTimeline(logs?: string | null, startedAt?: string, completed
     });
   }
   
-  // Add completion event if not already in logs
-  if (completedAt && !events.some(e => e.type === 'success' || e.type === 'error')) {
-    events.push({
-      id: 'end',
-      timestamp: new Date(completedAt),
-      type: status === 'success' ? 'success' : status === 'failed' ? 'error' : 'info',
-      message: status === 'success' ? 'Backup concluído com sucesso' : status === 'failed' ? 'Backup falhou' : 'Backup finalizado',
-    });
-  }
-  
-  return events.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  return events;
 }
 
 function TimelineEventIcon({ type }: { type: TimelineEvent['type'] }) {
@@ -119,8 +118,10 @@ function TimelineEventIcon({ type }: { type: TimelineEvent['type'] }) {
     case 'start':
       return <Play className="h-4 w-4 text-primary" />;
     case 'success':
+    case 'db-success':
       return <CheckCircle2 className="h-4 w-4 text-emerald-500" />;
     case 'error':
+    case 'db-failed':
       return <XCircle className="h-4 w-4 text-destructive" />;
     case 'warning':
       return <AlertCircle className="h-4 w-4 text-amber-500" />;
@@ -129,31 +130,110 @@ function TimelineEventIcon({ type }: { type: TimelineEvent['type'] }) {
   }
 }
 
+function DatabaseBackupRow({ backup }: { backup: DatabaseBackup }) {
+  const [isOpen, setIsOpen] = useState(false);
+  
+  return (
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <TableRow className="border-border">
+        <TableCell>
+          <div className="flex items-center gap-2">
+            <Database className="h-4 w-4 text-muted-foreground" />
+            <span className="font-medium">{backup.database_name}</span>
+          </div>
+        </TableCell>
+        <TableCell>
+          <code className="text-xs bg-muted px-2 py-1 rounded">
+            {backup.file_name || '-'}
+          </code>
+        </TableCell>
+        <TableCell>{formatBytes(backup.file_size)}</TableCell>
+        <TableCell>{formatDuration(backup.duration)}</TableCell>
+        <TableCell>
+          <StatusBadge status={backup.status} size="sm" />
+        </TableCell>
+        <TableCell>
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm">
+              {isOpen ? (
+                <ChevronUp className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
+            </Button>
+          </CollapsibleTrigger>
+        </TableCell>
+      </TableRow>
+      <CollapsibleContent asChild>
+        <TableRow className="border-border bg-muted/30">
+          <TableCell colSpan={6} className="p-4">
+            <div className="space-y-3">
+              {backup.error_message && (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3">
+                  <p className="text-sm font-medium text-destructive">Erro:</p>
+                  <p className="text-sm text-destructive/80">{backup.error_message}</p>
+                </div>
+              )}
+              
+              {backup.checksum && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Checksum:</span>
+                  <code className="text-xs bg-muted px-2 py-1 rounded break-all">
+                    {backup.checksum}
+                  </code>
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    className="h-6 w-6"
+                    onClick={() => {
+                      navigator.clipboard.writeText(backup.checksum!);
+                      toast.success('Checksum copiado!');
+                    }}
+                  >
+                    <Copy className="h-3 w-3" />
+                  </Button>
+                </div>
+              )}
+              
+              {backup.logs && (
+                <div className="rounded-lg border border-border bg-background">
+                  <div className="px-3 py-2 border-b border-border">
+                    <span className="text-xs font-medium text-muted-foreground">Logs</span>
+                  </div>
+                  <pre className="p-3 font-mono text-xs text-muted-foreground whitespace-pre-wrap max-h-40 overflow-auto">
+                    {backup.logs}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </TableCell>
+        </TableRow>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 export default function ExecutionDetails() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: executions, isLoading, refetch } = useExecutions();
-  
-  const execution = useMemo(() => {
-    return executions?.find(e => e.id === id);
-  }, [executions, id]);
+  const { data: execution, isLoading, refetch } = useExecutionDetails(id || '');
   
   const timeline = useMemo(() => {
     if (!execution) return [];
-    return parseLogsToTimeline(
-      execution.logs, 
-      execution.started_at, 
-      execution.completed_at,
-      execution.status
-    );
+    return parseLogsToTimeline(execution.logs);
   }, [execution]);
   
-  const copyChecksum = () => {
-    if (execution?.checksum) {
-      navigator.clipboard.writeText(execution.checksum);
-      toast.success('Checksum copiado!');
-    }
-  };
+  const databaseBackups = useMemo(() => {
+    return execution?.execution_database_backups || [];
+  }, [execution]);
+  
+  const backupStats = useMemo(() => {
+    const total = databaseBackups.length;
+    const success = databaseBackups.filter(b => b.status === 'success').length;
+    const failed = databaseBackups.filter(b => b.status === 'failed').length;
+    const running = databaseBackups.filter(b => b.status === 'running').length;
+    return { total, success, failed, running };
+  }, [databaseBackups]);
   
   if (isLoading) {
     return (
@@ -227,11 +307,30 @@ export default function ExecutionDetails() {
               </div>
             </div>
             
-            {execution.file_name && execution.status === 'success' && (
-              <Button variant="outline">
-                <Download className="mr-2 h-4 w-4" />
-                Baixar Backup
-              </Button>
+            {/* Stats Summary */}
+            {backupStats.total > 0 && (
+              <div className="flex items-center gap-4">
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-foreground">{backupStats.total}</p>
+                  <p className="text-xs text-muted-foreground">Bancos</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-emerald-500">{backupStats.success}</p>
+                  <p className="text-xs text-muted-foreground">Sucesso</p>
+                </div>
+                {backupStats.failed > 0 && (
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-destructive">{backupStats.failed}</p>
+                    <p className="text-xs text-muted-foreground">Falhas</p>
+                  </div>
+                )}
+                {backupStats.running > 0 && (
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-amber-500">{backupStats.running}</p>
+                    <p className="text-xs text-muted-foreground">Em execução</p>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </CardContent>
@@ -255,6 +354,40 @@ export default function ExecutionDetails() {
             </Card>
           )}
 
+          {/* Database Backups Table */}
+          {databaseBackups.length > 0 && (
+            <Card className="border-border bg-card">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Database className="h-5 w-5 text-primary" />
+                  Backups por Banco de Dados
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">
+                    (Formato: pg_dump compatível com PostgreSQL 18.1)
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-border hover:bg-transparent">
+                      <TableHead className="text-muted-foreground">Banco</TableHead>
+                      <TableHead className="text-muted-foreground">Arquivo</TableHead>
+                      <TableHead className="text-muted-foreground">Tamanho</TableHead>
+                      <TableHead className="text-muted-foreground">Duração</TableHead>
+                      <TableHead className="text-muted-foreground">Status</TableHead>
+                      <TableHead className="text-muted-foreground w-12"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {databaseBackups.map((backup) => (
+                      <DatabaseBackupRow key={backup.id} backup={backup} />
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Timeline */}
           <Card className="border-border bg-card">
             <CardHeader className="pb-3">
@@ -265,36 +398,38 @@ export default function ExecutionDetails() {
             </CardHeader>
             <CardContent>
               {timeline.length > 0 ? (
-                <div className="relative space-y-0">
-                  {timeline.map((event, index) => (
-                    <div key={event.id} className="relative flex gap-4 pb-4 last:pb-0">
-                      {/* Vertical line */}
-                      {index < timeline.length - 1 && (
-                        <div className="absolute left-[11px] top-6 h-full w-0.5 bg-border" />
-                      )}
-                      
-                      {/* Icon */}
-                      <div className="relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border bg-background">
-                        <TimelineEventIcon type={event.type} />
+                <ScrollArea className="h-64">
+                  <div className="relative space-y-0 pr-4">
+                    {timeline.map((event, index) => (
+                      <div key={event.id} className="relative flex gap-4 pb-4 last:pb-0">
+                        {/* Vertical line */}
+                        {index < timeline.length - 1 && (
+                          <div className="absolute left-[11px] top-6 h-full w-0.5 bg-border" />
+                        )}
+                        
+                        {/* Icon */}
+                        <div className="relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border bg-background">
+                          <TimelineEventIcon type={event.type} />
+                        </div>
+                        
+                        {/* Content */}
+                        <div className="flex-1 pt-0.5">
+                          <p className={`text-sm font-medium ${
+                            event.type === 'error' || event.type === 'db-failed' ? 'text-destructive' :
+                            event.type === 'success' || event.type === 'db-success' ? 'text-emerald-500' :
+                            event.type === 'warning' ? 'text-amber-500' :
+                            'text-foreground'
+                          }`}>
+                            {event.message}
+                          </p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {format(event.timestamp, "dd/MM/yyyy HH:mm:ss")}
+                          </p>
+                        </div>
                       </div>
-                      
-                      {/* Content */}
-                      <div className="flex-1 pt-0.5">
-                        <p className={`text-sm font-medium ${
-                          event.type === 'error' ? 'text-destructive' :
-                          event.type === 'success' ? 'text-emerald-500' :
-                          event.type === 'warning' ? 'text-amber-500' :
-                          'text-foreground'
-                        }`}>
-                          {event.message}
-                        </p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          {format(event.timestamp, "dd/MM/yyyy HH:mm:ss")}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                </ScrollArea>
               ) : (
                 <p className="text-sm text-muted-foreground">Nenhum evento registrado.</p>
               )}
@@ -362,7 +497,7 @@ export default function ExecutionDetails() {
                   <Clock className="h-4 w-4 text-primary" />
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Duração</p>
+                  <p className="text-xs text-muted-foreground">Duração Total</p>
                   <p className="text-sm font-medium text-foreground">
                     {formatDuration(execution.duration)}
                   </p>
@@ -374,7 +509,7 @@ export default function ExecutionDetails() {
                   <HardDrive className="h-4 w-4 text-primary" />
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Tamanho do Arquivo</p>
+                  <p className="text-xs text-muted-foreground">Tamanho Total</p>
                   <p className="text-sm font-medium text-foreground">
                     {formatBytes(execution.file_size)}
                   </p>
@@ -398,6 +533,11 @@ export default function ExecutionDetails() {
                   <p className="text-sm font-medium text-foreground">
                     {execution.backup_jobs?.postgres_instances?.name || '-'}
                   </p>
+                  {execution.backup_jobs?.postgres_instances?.host && (
+                    <p className="text-xs text-muted-foreground">
+                      {execution.backup_jobs.postgres_instances.host}
+                    </p>
+                  )}
                 </div>
               </div>
               
@@ -415,40 +555,32 @@ export default function ExecutionDetails() {
             </CardContent>
           </Card>
 
-          {/* Checksum */}
-          {execution.checksum && (
-            <Card className="border-border bg-card">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Checksum</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 rounded bg-muted px-3 py-2 font-mono text-xs text-muted-foreground break-all">
-                    {execution.checksum}
-                  </code>
-                  <Button variant="ghost" size="icon" onClick={copyChecksum}>
-                    <Copy className="h-4 w-4" />
-                  </Button>
+          {/* Format Info */}
+          <Card className="border-border bg-card">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Formato do Backup</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Comando</span>
+                  <code className="text-xs bg-muted px-2 py-1 rounded">pg_dump -Fc</code>
                 </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* File Info */}
-          {execution.file_name && (
-            <Card className="border-border bg-card">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Arquivo de Backup</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="rounded-lg bg-muted/50 p-3">
-                  <p className="font-mono text-xs text-muted-foreground break-all">
-                    {execution.file_name}
-                  </p>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Compressão</span>
+                  <span className="text-foreground">gzip (nível 9)</span>
                 </div>
-              </CardContent>
-            </Card>
-          )}
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Compatível</span>
+                  <span className="text-foreground">PostgreSQL 18.1</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Padrão do arquivo</span>
+                  <code className="text-xs bg-muted px-2 py-1 rounded">nome_YYYYMMDD_HHmmss.dump</code>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
     </MainLayout>
