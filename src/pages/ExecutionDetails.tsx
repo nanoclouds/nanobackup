@@ -8,7 +8,7 @@ import { Separator } from '@/components/ui/separator';
 import { useExecutionDetails, DatabaseBackup } from '@/hooks/useExecutions';
 import { format, formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { downloadDemoBackup } from '@/lib/backupDownload';
+import { downloadBackupFromFtp, triggerBlobDownload, formatBytesReadable } from '@/lib/backupDownload';
 import { 
   ArrowLeft,
   Calendar,
@@ -134,18 +134,55 @@ function TimelineEventIcon({ type }: { type: TimelineEvent['type'] }) {
   }
 }
 
-function DatabaseBackupRow({ backup }: { backup: DatabaseBackup }) {
+function DatabaseBackupRow({ backup, destinationId }: { backup: DatabaseBackup; destinationId?: string }) {
   const [isOpen, setIsOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
   
   const handleDownload = async () => {
-    if (!backup.file_name || backup.status !== 'success') return;
+    if (!backup.storage_path || backup.status !== 'success' || !destinationId) {
+      toast.error('Não é possível baixar este backup');
+      return;
+    }
     
     setDownloading(true);
     try {
-      // In production, this would download from storage
-      // For demo, we generate a mock SQL dump file
-      downloadDemoBackup(backup.database_name, backup.file_name);
+      toast.info('Baixando backup do FTP...');
+      
+      const result = await downloadBackupFromFtp(
+        destinationId,
+        backup.storage_path,
+        true // decompress if gzipped
+      );
+      
+      if (!result.success) {
+        throw new Error(result.message || 'Falha no download');
+      }
+      
+      // Determine file name (remove .gz if decompressed)
+      let fileName = backup.file_name || 'backup.sql';
+      if (result.wasDecompressed && fileName.endsWith('.gz')) {
+        fileName = fileName.slice(0, -3);
+      }
+      
+      // Trigger browser download
+      triggerBlobDownload(
+        result.content!,
+        fileName,
+        result.encoding === 'base64'
+      );
+      
+      const sizeInfo = result.wasDecompressed 
+        ? `${formatBytesReadable(result.originalSize || 0)} → ${formatBytesReadable(result.size || 0)} (descomprimido)`
+        : formatBytesReadable(result.size || 0);
+      
+      toast.success(`Download concluído: ${fileName}`, {
+        description: `Tamanho: ${sizeInfo} | Tempo: ${result.duration}ms`
+      });
+    } catch (error) {
+      console.error('Download error:', error);
+      toast.error('Erro ao baixar backup', {
+        description: error instanceof Error ? error.message : 'Erro desconhecido'
+      });
     } finally {
       setDownloading(false);
     }
@@ -484,16 +521,32 @@ export default function ExecutionDetails() {
                       (Formato: pg_dump compatível com PostgreSQL 18.1)
                     </span>
                   </CardTitle>
-                  {backupStats.success > 0 && (
+                  {backupStats.success > 0 && execution.backup_jobs?.ftp_destinations?.id && (
                     <Button 
                       variant="outline" 
                       size="sm"
-                      onClick={() => {
-                        databaseBackups
-                          .filter(b => b.status === 'success' && b.file_name)
-                          .forEach(b => {
-                            downloadDemoBackup(b.database_name, b.file_name!);
-                          });
+                      onClick={async () => {
+                        const destinationId = execution.backup_jobs?.ftp_destinations?.id;
+                        if (!destinationId) return;
+                        
+                        toast.info(`Baixando ${backupStats.success} backup(s)...`);
+                        
+                        for (const b of databaseBackups.filter(b => b.status === 'success' && b.storage_path)) {
+                          try {
+                            const result = await downloadBackupFromFtp(destinationId, b.storage_path!, true);
+                            if (result.success && result.content) {
+                              let fileName = b.file_name || 'backup.sql';
+                              if (result.wasDecompressed && fileName.endsWith('.gz')) {
+                                fileName = fileName.slice(0, -3);
+                              }
+                              triggerBlobDownload(result.content, fileName, result.encoding === 'base64');
+                            }
+                          } catch (err) {
+                            console.error('Download error:', err);
+                          }
+                        }
+                        
+                        toast.success('Downloads concluídos');
                       }}
                     >
                       <Download className="mr-2 h-4 w-4" />
@@ -516,7 +569,11 @@ export default function ExecutionDetails() {
                   </TableHeader>
                   <TableBody>
                     {databaseBackups.map((backup) => (
-                      <DatabaseBackupRow key={backup.id} backup={backup} />
+                      <DatabaseBackupRow 
+                        key={backup.id} 
+                        backup={backup} 
+                        destinationId={execution.backup_jobs?.ftp_destinations?.id}
+                      />
                     ))}
                   </TableBody>
                 </Table>
