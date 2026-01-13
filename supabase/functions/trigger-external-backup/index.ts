@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { decrypt } from "../_shared/crypto.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -54,6 +55,11 @@ serve(async (req) => {
       throw new Error('Instância ou destino não encontrado');
     }
 
+    // Decrypt credentials
+    const instancePassword = await decrypt(instance.password);
+    const destinationPassword = destination.password ? await decrypt(destination.password) : null;
+    const destinationSshKey = destination.ssh_key ? await decrypt(destination.ssh_key) : null;
+
     // Determinar quais bancos fazer backup
     let databasesToBackup = databases || [];
     if (databasesToBackup.length === 0) {
@@ -69,7 +75,7 @@ serve(async (req) => {
     // Construir URL de callback
     const callbackUrl = `${supabaseUrl}/functions/v1/backup-callback`;
 
-    // Chamar servidor externo
+    // Chamar servidor externo with decrypted credentials
     const response = await fetch(`${externalServerUrl}/backup`, {
       method: 'POST',
       headers: {
@@ -85,7 +91,7 @@ serve(async (req) => {
           port: instance.port,
           name: instance.database,
           username: instance.username,
-          password: instance.password,
+          password: instancePassword,
           sslEnabled: instance.ssl_enabled
         },
         destination: {
@@ -93,8 +99,8 @@ serve(async (req) => {
           host: destination.host,
           port: destination.port,
           username: destination.username,
-          password: destination.password,
-          sshKey: destination.ssh_key,
+          password: destinationPassword,
+          sshKey: destinationSshKey,
           baseDirectory: destination.base_directory
         },
         options: {

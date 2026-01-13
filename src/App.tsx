@@ -16,8 +16,8 @@ import Executions from "./pages/Executions";
 import ExecutionDetails from "./pages/ExecutionDetails";
 import Alerts from "./pages/Alerts";
 import Settings from "./pages/Settings";
+import Users from "./pages/Users";
 import NotFound from "./pages/NotFound";
-
 const queryClient = new QueryClient();
 
 const App = () => (
@@ -69,6 +69,11 @@ const App = () => (
               <Route path="/settings" element={
                 <ProtectedRoute>
                   <Settings />
+                </ProtectedRoute>
+              } />
+              <Route path="/users" element={
+                <ProtectedRoute requiredRole="admin">
+                  <Users />
                 </ProtectedRoute>
               } />
               <Route path="*" element={<NotFound />} />

@@ -41,6 +41,23 @@ function transformInstance(raw: Record<string, unknown>): PostgresInstance {
   } as PostgresInstance;
 }
 
+// Encrypt credentials via edge function
+async function encryptCredentials(type: 'instance' | 'destination', id: string, password?: string, ssh_key?: string) {
+  if (!password && !ssh_key) return;
+  
+  try {
+    const { error } = await supabase.functions.invoke('encrypt-credentials', {
+      body: { type, id, password, ssh_key },
+    });
+    
+    if (error) {
+      console.error('Failed to encrypt credentials:', error);
+    }
+  } catch (e) {
+    console.error('Failed to encrypt credentials:', e);
+  }
+}
+
 export function useInstances() {
   return useQuery({
     queryKey: ['instances'],
@@ -71,7 +88,7 @@ export function useCreateInstance() {
           port: instance.port,
           database: instance.database,
           username: instance.username,
-          password: instance.password,
+          password: instance.password, // Stored temporarily
           ssl_enabled: instance.ssl_enabled,
           environment: instance.environment,
           criticality: instance.criticality,
@@ -83,6 +100,12 @@ export function useCreateInstance() {
         .single();
       
       if (error) throw error;
+      
+      // Encrypt the password after creation
+      if (data && instance.password) {
+        await encryptCredentials('instance', data.id, instance.password);
+      }
+      
       return data;
     },
     onSuccess: () => {
@@ -99,9 +122,14 @@ export function useUpdateInstance() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async ({ id, discovered_databases, ...updates }: Partial<PostgresInstance> & { id: string }) => {
+    mutationFn: async ({ id, discovered_databases, password, ...updates }: Partial<PostgresInstance> & { id: string }) => {
       // Prepare update payload without the discovered_databases (it's managed by edge function)
       const updatePayload: Record<string, unknown> = { ...updates };
+      
+      // If password is provided, include it temporarily (will be encrypted)
+      if (password) {
+        updatePayload.password = password;
+      }
       
       const { data, error } = await supabase
         .from('postgres_instances')
@@ -111,6 +139,12 @@ export function useUpdateInstance() {
         .single();
       
       if (error) throw error;
+      
+      // Encrypt password if it was updated
+      if (password) {
+        await encryptCredentials('instance', id, password);
+      }
+      
       return data;
     },
     onSuccess: () => {

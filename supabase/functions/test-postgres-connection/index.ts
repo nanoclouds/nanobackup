@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { decrypt } from "../_shared/crypto.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -44,6 +45,9 @@ serve(async (req) => {
       throw new Error("Instance not found");
     }
 
+    // Decrypt password if encrypted
+    const password = await decrypt(instance.password);
+
     // Try to connect to PostgreSQL using Deno's postgres driver
     const { Client } = await import("https://deno.land/x/postgres@v0.17.0/mod.ts");
     
@@ -51,7 +55,7 @@ serve(async (req) => {
       hostname: instance.host,
       port: instance.port,
       user: instance.username,
-      password: instance.password,
+      password: password,
       database: instance.database,
       tls: instance.ssl_enabled ? { enabled: true, enforce: false } : { enabled: false },
       connection: { attempts: 1 },

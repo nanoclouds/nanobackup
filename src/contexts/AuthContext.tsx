@@ -11,6 +11,9 @@ interface Profile {
   name: string | null;
   role: UserRole;
   environments: string[];
+  approved: boolean;
+  approved_at: string | null;
+  approved_by: string | null;
 }
 
 interface AuthContextType {
