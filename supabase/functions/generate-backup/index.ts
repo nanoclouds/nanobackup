@@ -8,10 +8,11 @@ const corsHeaders = {
 };
 
 // Ultra-conservative limits to avoid CPU timeout
-const TABLES_PER_CHUNK = 3;  // Very few tables per chunk
-const MAX_ROWS_PER_TABLE = 5000; // Maximum rows to fetch per table per chunk
-const BATCH_SIZE_ROWS = 50; // Smaller batches
-const MAX_STRING_LENGTH = 30000; // Truncate large strings
+const TABLES_PER_CHUNK = 2;  // Very few tables per chunk
+const MAX_ROWS_PER_TABLE = 2000; // Maximum rows to fetch per table
+const BATCH_SIZE_ROWS = 25; // Smaller batches
+const MAX_STRING_LENGTH = 20000; // Truncate large strings
+const TABLE_TIMEOUT_MS = 4000; // 4 second limit per table
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -40,7 +41,6 @@ serve(async (req) => {
       includeData = true,
       chunkIndex = 0,
       getMetadataOnly = false,
-      tableRowOffset = 0 // For large tables, continue from this offset
     } = await req.json();
     
     if (!instanceId) throw new Error("instanceId is required");
@@ -68,7 +68,7 @@ serve(async (req) => {
     await pgClient.connect();
     console.log(`Connected to ${instance.host}:${instance.port}/${targetDb}`);
 
-    // Get all table names with row counts
+    // Get all table names
     const tablesResult = await pgClient.queryObject<{ table_name: string }>(`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
@@ -136,6 +136,8 @@ SET session_replication_role = 'replica';
     let hasMoreData = false;
 
     for (const tableName of tablesToProcess) {
+      const tableStartTime = Date.now();
+      
       try {
         // Get columns
         const columnsResult = await pgClient.queryObject<{
@@ -161,26 +163,24 @@ SET session_replication_role = 'replica';
           WHERE tc.table_schema = 'public' AND tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY'
         `, [tableName]);
 
-        // Build CREATE TABLE (only on first appearance of table)
-        if (tableRowOffset === 0) {
-          const columnDefs = columns.map(col => {
-            let typeDef = col.data_type.toUpperCase();
-            if (col.character_maximum_length) typeDef = `${typeDef}(${col.character_maximum_length})`;
-            if (col.is_nullable === 'NO') typeDef += ' NOT NULL';
-            if (col.column_default) typeDef += ` DEFAULT ${col.column_default}`;
-            return `  "${col.column_name}" ${typeDef}`;
-          });
+        // Build CREATE TABLE
+        const columnDefs = columns.map(col => {
+          let typeDef = col.data_type.toUpperCase();
+          if (col.character_maximum_length) typeDef = `${typeDef}(${col.character_maximum_length})`;
+          if (col.is_nullable === 'NO') typeDef += ' NOT NULL';
+          if (col.column_default) typeDef += ` DEFAULT ${col.column_default}`;
+          return `  "${col.column_name}" ${typeDef}`;
+        });
 
-          if (pkResult.rows.length > 0) {
-            const pkCols = pkResult.rows.map(r => `"${r.column_name}"`).join(', ');
-            columnDefs.push(`  PRIMARY KEY (${pkCols})`);
-          }
-
-          sqlParts.push(`-- Table: ${tableName}\nDROP TABLE IF EXISTS public."${tableName}" CASCADE;\n`);
-          sqlParts.push(`CREATE TABLE public."${tableName}" (\n${columnDefs.join(',\n')}\n);\n\n`);
+        if (pkResult.rows.length > 0) {
+          const pkCols = pkResult.rows.map(r => `"${r.column_name}"`).join(', ');
+          columnDefs.push(`  PRIMARY KEY (${pkCols})`);
         }
 
-        // Insert data if requested
+        sqlParts.push(`-- Table: ${tableName}\nDROP TABLE IF EXISTS public."${tableName}" CASCADE;\n`);
+        sqlParts.push(`CREATE TABLE public."${tableName}" (\n${columnDefs.join(',\n')}\n);\n\n`);
+
+        // Insert data if requested - use RAW array query to avoid date parsing issues
         if (includeData) {
           const countResult = await pgClient.queryObject<{ cnt: number }>(
             `SELECT COUNT(*)::int as cnt FROM public."${tableName}"`
@@ -203,33 +203,41 @@ SET session_replication_role = 'replica';
             }
             
             while (offset < rowsToFetch) {
+              // Check timeout
+              if (Date.now() - tableStartTime > TABLE_TIMEOUT_MS) {
+                console.log(`Table ${tableName} timeout after ${tableRows} rows`);
+                sqlParts.push(`-- WARNING: Table ${tableName} truncated due to timeout at ${tableRows} rows\n`);
+                hasMoreData = true;
+                break;
+              }
+              
               const fetchLimit = Math.min(BATCH_SIZE_ROWS, rowsToFetch - offset);
               
-              // Order by primary key if available for consistent results
+              // Use queryArray to get raw values without date parsing
+              // Also cast all values to text to avoid type parsing issues
+              const selectCols = columns.map(c => `"${c.column_name}"::text`).join(', ');
               const orderClause = pkResult.rows.length > 0 
                 ? `ORDER BY ${pkResult.rows.map(r => `"${r.column_name}"`).join(', ')}`
                 : '';
               
-              const dataResult = await pgClient.queryObject(
-                `SELECT * FROM public."${tableName}" ${orderClause} LIMIT ${fetchLimit} OFFSET ${offset}`
-              );
-              const rows = dataResult.rows as Record<string, unknown>[];
-              
-              if (rows.length === 0) break;
-              
-              // Generate INSERT statements one row at a time
-              for (const row of rows) {
-                const vals = columns.map(col => escapeSqlValue(row[col.column_name])).join(', ');
-                sqlParts.push(`INSERT INTO public."${tableName}" (${columnNames}) VALUES (${vals});\n`);
-              }
-              
-              tableRows += rows.length;
-              offset += fetchLimit;
-              
-              // Check if we're taking too long (5 second safety limit per table)
-              if (Date.now() - startTime > 5000) {
-                console.log(`Time limit approaching, processed ${tableRows} rows for ${tableName}`);
-                hasMoreData = true;
+              try {
+                const dataResult = await pgClient.queryArray(
+                  `SELECT ${selectCols} FROM public."${tableName}" ${orderClause} LIMIT ${fetchLimit} OFFSET ${offset}`
+                );
+                
+                if (dataResult.rows.length === 0) break;
+                
+                // Generate INSERT statements one row at a time
+                for (const row of dataResult.rows) {
+                  const vals = row.map((val, idx) => escapeSqlValueFromText(val, columns[idx].data_type)).join(', ');
+                  sqlParts.push(`INSERT INTO public."${tableName}" (${columnNames}) VALUES (${vals});\n`);
+                }
+                
+                tableRows += dataResult.rows.length;
+                offset += fetchLimit;
+              } catch (queryError) {
+                console.error(`Query error for ${tableName} at offset ${offset}:`, queryError);
+                sqlParts.push(`-- Error fetching data at offset ${offset}: ${queryError instanceof Error ? queryError.message : 'Unknown'}\n`);
                 break;
               }
             }
@@ -307,29 +315,47 @@ ${hasMoreData ? '-- WARNING: Some tables had row limits applied due to size cons
   }
 });
 
-function escapeSqlValue(value: unknown): string {
+// Escape SQL value from text representation (avoids date parsing issues)
+function escapeSqlValueFromText(value: unknown, dataType: string): string {
   if (value === null || value === undefined) return 'NULL';
-  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
-  if (typeof value === 'number') return String(value);
-  if (value instanceof Date) return `'${value.toISOString()}'`;
-  if (value instanceof Uint8Array) {
-    // Handle binary data as hex - limit size
-    if (value.length > 10000) {
-      return `'\\x[BINARY_DATA_TRUNCATED_${value.length}_BYTES]'`;
+  
+  const strValue = String(value);
+  
+  // Handle empty strings
+  if (strValue === '') {
+    // For text types, return empty string; for others, return NULL
+    if (dataType.includes('char') || dataType === 'text' || dataType === 'name') {
+      return "''";
     }
-    const hex = Array.from(value).map(b => b.toString(16).padStart(2, '0')).join('');
-    return `'\\x${hex}'`;
+    return 'NULL';
   }
-  if (typeof value === 'object') {
-    const json = JSON.stringify(value).replace(/'/g, "''");
-    if (json.length > MAX_STRING_LENGTH) {
-      return `'${json.substring(0, MAX_STRING_LENGTH)}...[TRUNCATED]'`;
+  
+  // Handle boolean
+  if (dataType === 'boolean') {
+    return strValue.toLowerCase() === 't' || strValue === 'true' || strValue === '1' ? 'TRUE' : 'FALSE';
+  }
+  
+  // Handle numeric types - return as-is
+  if (dataType.includes('int') || dataType.includes('numeric') || dataType.includes('decimal') || 
+      dataType === 'real' || dataType === 'double precision' || dataType === 'money') {
+    return strValue;
+  }
+  
+  // Handle bytea/binary
+  if (dataType === 'bytea') {
+    if (strValue.length > 20000) {
+      return `'[BINARY_DATA_TRUNCATED_${strValue.length}_CHARS]'`;
     }
-    return `'${json}'`;
+    // Already in text format, just quote it
+    return `'${strValue.replace(/'/g, "''")}'`;
   }
-  const str = String(value).replace(/'/g, "''");
-  if (str.length > MAX_STRING_LENGTH) {
-    return `'${str.substring(0, MAX_STRING_LENGTH)}...[TRUNCATED]'`;
+  
+  // Truncate very long strings
+  let finalValue = strValue;
+  if (finalValue.length > MAX_STRING_LENGTH) {
+    finalValue = finalValue.substring(0, MAX_STRING_LENGTH) + '...[TRUNCATED]';
   }
-  return `'${str}'`;
+  
+  // Escape quotes and return quoted string
+  return `'${finalValue.replace(/'/g, "''")}'`;
 }
