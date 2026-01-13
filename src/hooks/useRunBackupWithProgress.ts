@@ -249,6 +249,7 @@ export function useRunBackupWithProgress(
               const isFirstChunk = cursor === null;
               
               // Update progress: generating phase
+              const currentTableInfo = cursor ? ` [tabela ${cursor.tableIndex + 1}]` : '';
               onProgress({
                 executionId: execution.id,
                 jobName: job.name,
@@ -258,7 +259,7 @@ export function useRunBackupWithProgress(
                 currentDatabase: i + 1,
                 totalDatabases: databases.length,
                 phase: 'generating',
-                message: `Gerando chunk ${chunkCount}... (${totalRowsProcessed}/${totalRowsInDb} linhas)`,
+                message: `Gerando chunk ${chunkCount}${currentTableInfo}... (${totalRowsProcessed}/${totalRowsInDb} linhas)`,
                 startedAt: startTime,
               });
               
@@ -280,6 +281,7 @@ export function useRunBackupWithProgress(
               const chunkContent = chunkResult.content;
               const chunkSize = chunkResult.stats?.size || 0;
               const rowsInChunk = chunkResult.stats?.rowsInChunk || 0;
+              const currentTableName = chunkResult.stats?.currentTableName || '';
               
               totalTablesProcessed = chunkResult.stats?.totalTables || totalTablesProcessed;
               totalRowsProcessed += rowsInChunk;
@@ -288,6 +290,9 @@ export function useRunBackupWithProgress(
               hasMoreData = chunkResult.pagination?.hasMoreData || false;
               cursor = chunkResult.pagination?.nextCursor || null;
               const isLastChunk = chunkResult.pagination?.isLastChunk || false;
+              
+              // Build table info for progress message
+              const tableInfo = currentTableName ? ` → ${currentTableName}` : '';
               
               // Check for cancellation before upload
               if (checkCancelled && checkCancelled()) {
@@ -304,7 +309,7 @@ export function useRunBackupWithProgress(
                 currentDatabase: i + 1,
                 totalDatabases: databases.length,
                 phase: 'uploading',
-                message: `Enviando chunk ${chunkCount}... (${totalRowsProcessed}/${totalRowsInDb} linhas)`,
+                message: `Enviando chunk ${chunkCount}${tableInfo}... (${totalRowsProcessed}/${totalRowsInDb} linhas)`,
                 startedAt: startTime,
               });
               
@@ -330,7 +335,7 @@ export function useRunBackupWithProgress(
                 totalBytesUploaded += chunkSize;
               }
               
-              dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (total: ${totalRowsProcessed}/${totalRowsInDb})\n`;
+              dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (total: ${totalRowsProcessed}/${totalRowsInDb})\n`;
             }
             
             dbLogs += `[${new Date().toISOString()}] ✓ Todos os ${totalRowsProcessed} registros processados em ${chunkCount} chunks\n`;
