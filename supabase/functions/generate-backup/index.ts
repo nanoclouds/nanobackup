@@ -9,12 +9,12 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Conservative limits to avoid CPU timeout (max ~10s per chunk)
-const TABLES_PER_CHUNK = 1;  // Process 1 table at a time for large tables
-const MAX_ROWS_PER_CHUNK = 5000; // Maximum rows per chunk (pagination)
-const BATCH_SIZE_ROWS = 100; // Rows per batch insert (smaller = less memory)
-const MAX_STRING_LENGTH = 50000; // 50KB max string length
-const TABLE_TIMEOUT_MS = 8000; // 8 second soft limit per table
+// Chunk configuration - user defined limits
+const TABLES_PER_CHUNK = 1;  // 1 table per chunk
+const MAX_ROWS_PER_CHUNK = 5000; // 5.000 rows max per chunk
+const BATCH_SIZE_ROWS = 500; // 500 rows per batch
+const MAX_STRING_LENGTH = 2000000; // 2MB max string length
+const TABLE_TIMEOUT_MS = 90000; // 90 seconds timeout per table
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
