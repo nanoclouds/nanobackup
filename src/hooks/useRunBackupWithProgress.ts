@@ -313,30 +313,53 @@ export function useRunBackupWithProgress(
                 startedAt: startTime,
               });
               
-              // Upload to FTP
+              // Upload to FTP with retry logic
               if (destination) {
-                const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
-                  body: {
-                    destinationId: destination.id,
-                    fileName: fileName.replace('.gz', '').replace('.zst', ''),
-                    remotePath: ftpPath.replace('.gz', '').replace('.zst', ''),
-                    fileContent: chunkContent,
-                    compression: 'none',
-                    appendMode: true,
-                    isFirstChunk,
-                    isLastChunk
-                  }
-                });
+                let uploadAttempts = 0;
+                const maxUploadAttempts = 3;
+                let uploadSuccess = false;
                 
-                if (uploadError || !uploadResult?.success) {
-                  throw new Error(`Upload chunk ${chunkCount} falhou: ${uploadError?.message || uploadResult?.message}`);
+                while (!uploadSuccess && uploadAttempts < maxUploadAttempts) {
+                  uploadAttempts++;
+                  
+                  const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
+                    body: {
+                      destinationId: destination.id,
+                      fileName: fileName.replace('.gz', '').replace('.zst', ''),
+                      remotePath: ftpPath.replace('.gz', '').replace('.zst', ''),
+                      fileContent: chunkContent,
+                      compression: 'none',
+                      appendMode: true,
+                      isFirstChunk,
+                      isLastChunk,
+                      chunkNumber: chunkCount,
+                      expectedSize: chunkSize,
+                    }
+                  });
+                  
+                  if (uploadError || !uploadResult?.success) {
+                    if (uploadAttempts < maxUploadAttempts) {
+                      dbLogs += `[${new Date().toISOString()}] ⚠ Tentativa ${uploadAttempts} falhou, tentando novamente...\n`;
+                      // Wait before retry
+                      await new Promise(resolve => setTimeout(resolve, 1000));
+                      continue;
+                    }
+                    throw new Error(`Upload chunk ${chunkCount} falhou após ${maxUploadAttempts} tentativas: ${uploadError?.message || uploadResult?.message}`);
+                  }
+                  
+                  uploadSuccess = true;
+                  totalBytesUploaded += chunkSize;
+                  
+                  // Log upload result with remote file info
+                  const remoteInfo = uploadResult.message || '';
+                  const remoteSize = uploadResult.remoteSize || 0;
+                  dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (remoto: ${(remoteSize / 1024).toFixed(2)} KB)\n`;
                 }
                 
-                totalBytesUploaded += chunkSize;
-                
-                // Log upload result with remote file info
-                const remoteInfo = uploadResult.message || '';
-                dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB enviados (${remoteInfo})\n`;
+                // Small delay between chunks to prevent FTP server overload
+                if (hasMoreData) {
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                }
               } else {
                 dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (sem destino)\n`;
               }

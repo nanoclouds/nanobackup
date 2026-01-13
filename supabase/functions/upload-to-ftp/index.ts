@@ -463,11 +463,23 @@ serve(async (req) => {
 
         success = true;
         message = appendMode && !isFirstChunk 
-          ? `Dados anexados via FTP para ${uploadedPath} (${remoteSize} bytes no servidor)` 
-          : `Arquivo enviado via FTP para ${uploadedPath}`;
+          ? `Chunk anexado (${(remoteSize / 1024).toFixed(2)} KB no servidor)` 
+          : `Arquivo criado (${(remoteSize / 1024).toFixed(2)} KB)`;
         authMethod = "password";
 
+        // Return remote size in response
         await ftpClient.close();
+        
+        return new Response(
+          JSON.stringify({
+            success: true,
+            message,
+            authMethod,
+            path: uploadedPath,
+            remoteSize,
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       } catch (e: unknown) {
         const errorMessage = e instanceof Error ? e.message : "Erro desconhecido";
         message = `Falha no upload FTP: ${errorMessage}`;
