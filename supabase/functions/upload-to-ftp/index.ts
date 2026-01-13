@@ -467,7 +467,7 @@ serve(async (req) => {
           : `Arquivo criado (${(remoteSize / 1024).toFixed(2)} KB)`;
         authMethod = "password";
 
-        // Return remote size in response
+        // Return remote size and checksum in response
         await ftpClient.close();
         
         return new Response(
@@ -477,6 +477,8 @@ serve(async (req) => {
             authMethod,
             path: uploadedPath,
             remoteSize,
+            uploadedBytes: data.length,
+            checksum: remoteChecksum,
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
