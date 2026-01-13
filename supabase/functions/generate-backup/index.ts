@@ -7,51 +7,12 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-interface TableInfo {
-  table_name: string;
-  table_schema: string;
-}
-
-interface ColumnInfo {
-  column_name: string;
-  data_type: string;
-  is_nullable: string;
-  column_default: string | null;
-  character_maximum_length: number | null;
-  numeric_precision: number | null;
-  numeric_scale: number | null;
-}
-
-// Escape SQL string values - optimized
-function escapeSqlValue(value: unknown): string {
-  if (value === null || value === undefined) return 'NULL';
-  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
-  if (typeof value === 'number') return String(value);
-  if (value instanceof Date) return `'${value.toISOString()}'`;
-  if (typeof value === 'object') return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
-// Map PostgreSQL types to SQL type definitions
-function getColumnDefinition(col: ColumnInfo): string {
-  let typeDef = col.data_type.toUpperCase();
-  
-  if (col.character_maximum_length) {
-    typeDef = `${typeDef}(${col.character_maximum_length})`;
-  } else if (col.numeric_precision && col.data_type === 'numeric') {
-    typeDef = `NUMERIC(${col.numeric_precision}${col.numeric_scale ? `, ${col.numeric_scale}` : ''})`;
-  }
-  
-  if (col.is_nullable === 'NO') typeDef += ' NOT NULL';
-  if (col.column_default) typeDef += ` DEFAULT ${col.column_default}`;
-  
-  return typeDef;
-}
-
-// Maximum rows per table to avoid memory issues
-const MAX_ROWS_PER_TABLE = 10000;
-// Batch size for INSERT statements
-const INSERT_BATCH_SIZE = 100;
+// Maximum rows per table - very low to avoid CPU timeout
+const MAX_ROWS_PER_TABLE = 1000;
+// Maximum total rows across all tables
+const MAX_TOTAL_ROWS = 10000;
+// Maximum tables with data
+const MAX_TABLES_WITH_DATA = 50;
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -77,7 +38,6 @@ serve(async (req) => {
     
     if (!instanceId) throw new Error("instanceId is required");
 
-    // Fetch instance details
     const { data: instance, error: instanceError } = await supabaseClient
       .from("postgres_instances")
       .select("*")
@@ -89,7 +49,6 @@ serve(async (req) => {
     const targetDb = databaseName || instance.database;
     console.log(`Connecting to PostgreSQL: ${instance.host}:${instance.port}/${targetDb}`);
 
-    // Connect to PostgreSQL with timeout
     pgClient = new Client({
       hostname: instance.host,
       port: instance.port,
@@ -104,8 +63,6 @@ serve(async (req) => {
     console.log("Connected to PostgreSQL");
 
     const startTime = Date.now();
-    
-    // Use array to build SQL (more efficient than string concatenation)
     const sqlParts: string[] = [];
     
     // Header
@@ -123,149 +80,99 @@ SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SET check_function_bodies = false;
 SET row_security = off;
+SET session_replication_role = 'replica';
 `);
 
-    // Get all tables with their columns and constraints in one optimized query
-    const schemaResult = await pgClient.queryObject<{
-      table_name: string;
-      columns_json: string;
-      pk_columns: string | null;
-      fk_constraints: string | null;
-    }>(`
-      WITH table_cols AS (
-        SELECT 
-          t.table_name,
-          json_agg(
-            json_build_object(
-              'name', c.column_name,
-              'type', c.data_type,
-              'nullable', c.is_nullable,
-              'default', c.column_default,
-              'max_length', c.character_maximum_length,
-              'precision', c.numeric_precision,
-              'scale', c.numeric_scale
-            ) ORDER BY c.ordinal_position
-          ) as columns_json
-        FROM information_schema.tables t
-        JOIN information_schema.columns c ON t.table_name = c.table_name AND t.table_schema = c.table_schema
-        WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE'
-        GROUP BY t.table_name
-      ),
-      pk_info AS (
-        SELECT 
-          tc.table_name,
-          string_agg(kcu.column_name, ',' ORDER BY kcu.ordinal_position) as pk_columns
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
-        WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
-        GROUP BY tc.table_name
-      ),
-      fk_info AS (
-        SELECT 
-          tc.table_name,
-          json_agg(
-            json_build_object(
-              'name', tc.constraint_name,
-              'column', kcu.column_name,
-              'ref_table', ccu.table_name,
-              'ref_column', ccu.column_name
-            )
-          ) as fk_constraints
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-        JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name AND tc.table_schema = ccu.table_schema
-        WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'
-        GROUP BY tc.table_name
-      )
-      SELECT 
-        tc.table_name,
-        tc.columns_json::text,
-        pk.pk_columns,
-        fk.fk_constraints::text
-      FROM table_cols tc
-      LEFT JOIN pk_info pk ON tc.table_name = pk.table_name
-      LEFT JOIN fk_info fk ON tc.table_name = fk.table_name
-      ORDER BY tc.table_name
+    // Get tables with basic info only (no complex CTE to save CPU)
+    const tablesResult = await pgClient.queryObject<{ table_name: string }>(`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      ORDER BY table_name
     `);
 
-    const tables = schemaResult.rows;
+    const tables = tablesResult.rows;
     console.log(`Found ${tables.length} tables`);
 
     let totalRows = 0;
-    let tablesProcessed = 0;
+    let tablesWithData = 0;
 
-    // Disable FK checks during restore
-    sqlParts.push(`\n-- Disable foreign key checks during restore\nSET session_replication_role = 'replica';\n`);
-
-    for (const table of tables) {
-      const tableName = table.table_name;
-      tablesProcessed++;
+    for (let i = 0; i < tables.length; i++) {
+      const tableName = tables[i].table_name;
       
-      // Log progress every 10 tables
-      if (tablesProcessed % 10 === 0) {
-        console.log(`Progress: ${tablesProcessed}/${tables.length} tables`);
+      if ((i + 1) % 20 === 0) {
+        console.log(`Progress: ${i + 1}/${tables.length} tables`);
       }
 
-      const columns = JSON.parse(table.columns_json) as Array<{
-        name: string;
-        type: string;
-        nullable: string;
-        default: string | null;
-        max_length: number | null;
-        precision: number | null;
-        scale: number | null;
-      }>;
+      // Get columns for this table
+      const columnsResult = await pgClient.queryObject<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+        column_default: string | null;
+        character_maximum_length: number | null;
+      }>(`
+        SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = $1
+        ORDER BY ordinal_position
+      `, [tableName]);
 
-      // Generate CREATE TABLE
+      const columns = columnsResult.rows;
+      if (columns.length === 0) continue;
+
+      // Get primary key
+      const pkResult = await pgClient.queryObject<{ column_name: string }>(`
+        SELECT kcu.column_name FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
+        WHERE tc.table_schema = 'public' AND tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY'
+      `, [tableName]);
+
+      // Build CREATE TABLE
       const columnDefs = columns.map(col => {
-        let typeDef = col.type.toUpperCase();
-        if (col.max_length) typeDef = `${typeDef}(${col.max_length})`;
-        else if (col.precision && col.type === 'numeric') {
-          typeDef = `NUMERIC(${col.precision}${col.scale ? `, ${col.scale}` : ''})`;
-        }
-        if (col.nullable === 'NO') typeDef += ' NOT NULL';
-        if (col.default) typeDef += ` DEFAULT ${col.default}`;
-        return `  "${col.name}" ${typeDef}`;
+        let typeDef = col.data_type.toUpperCase();
+        if (col.character_maximum_length) typeDef = `${typeDef}(${col.character_maximum_length})`;
+        if (col.is_nullable === 'NO') typeDef += ' NOT NULL';
+        if (col.column_default) typeDef += ` DEFAULT ${col.column_default}`;
+        return `  "${col.column_name}" ${typeDef}`;
       });
 
-      // Add primary key
-      if (table.pk_columns) {
-        const pkCols = table.pk_columns.split(',').map(c => `"${c.trim()}"`).join(', ');
+      if (pkResult.rows.length > 0) {
+        const pkCols = pkResult.rows.map(r => `"${r.column_name}"`).join(', ');
         columnDefs.push(`  PRIMARY KEY (${pkCols})`);
       }
 
       sqlParts.push(`\n-- Table: ${tableName}\nDROP TABLE IF EXISTS public."${tableName}" CASCADE;\n`);
       sqlParts.push(`CREATE TABLE public."${tableName}" (\n${columnDefs.join(',\n')}\n);\n`);
 
-      // Generate INSERT statements if includeData is true
-      if (includeData) {
-        // Count rows first to avoid loading too much data
+      // Insert data if requested and within limits
+      if (includeData && totalRows < MAX_TOTAL_ROWS && tablesWithData < MAX_TABLES_WITH_DATA) {
         const countResult = await pgClient.queryObject<{ cnt: number }>(
           `SELECT COUNT(*)::int as cnt FROM public."${tableName}"`
         );
         const rowCount = countResult.rows[0]?.cnt || 0;
         
         if (rowCount > 0) {
-          const effectiveLimit = Math.min(rowCount, MAX_ROWS_PER_TABLE);
-          const columnNames = columns.map(c => `"${c.name}"`).join(', ');
+          const limit = Math.min(rowCount, MAX_ROWS_PER_TABLE, MAX_TOTAL_ROWS - totalRows);
           
-          // Fetch data with limit
           const dataResult = await pgClient.queryObject(
-            `SELECT * FROM public."${tableName}" LIMIT ${effectiveLimit}`
+            `SELECT * FROM public."${tableName}" LIMIT ${limit}`
           );
           const rows = dataResult.rows as Record<string, unknown>[];
           
           if (rows.length > 0) {
-            sqlParts.push(`\n-- Data for ${tableName} (${rows.length}${rowCount > MAX_ROWS_PER_TABLE ? ` of ${rowCount}` : ''} rows)\n`);
+            tablesWithData++;
+            const columnNames = columns.map(c => `"${c.column_name}"`).join(', ');
             
-            // Generate batch INSERT statements
-            for (let i = 0; i < rows.length; i += INSERT_BATCH_SIZE) {
-              const batch = rows.slice(i, i + INSERT_BATCH_SIZE);
+            sqlParts.push(`\n-- Data for ${tableName} (${rows.length}${rowCount > limit ? ` of ${rowCount}` : ''} rows)\n`);
+            
+            // Generate INSERT statements in batches
+            const batchSize = 50;
+            for (let j = 0; j < rows.length; j += batchSize) {
+              const batch = rows.slice(j, j + batchSize);
               const valuesArray = batch.map(row => {
-                const vals = columns.map(col => escapeSqlValue(row[col.name])).join(', ');
+                const vals = columns.map(col => escapeSqlValue(row[col.column_name])).join(', ');
                 return `(${vals})`;
               });
-              
               sqlParts.push(`INSERT INTO public."${tableName}" (${columnNames}) VALUES\n${valuesArray.join(',\n')};\n`);
             }
             
@@ -275,65 +182,8 @@ SET row_security = off;
       }
     }
 
-    // Add foreign key constraints at the end (after all tables created)
-    const fkTables = tables.filter(t => t.fk_constraints !== null);
-    if (fkTables.length > 0) {
-      sqlParts.push(`\n-- Foreign Key Constraints\n`);
-      for (const table of fkTables) {
-        if (!table.fk_constraints) continue;
-        const fks = JSON.parse(table.fk_constraints) as Array<{
-          name: string;
-          column: string;
-          ref_table: string;
-          ref_column: string;
-        }>;
-        
-        const addedFks = new Set<string>();
-        for (const fk of fks) {
-          if (!addedFks.has(fk.name)) {
-            addedFks.add(fk.name);
-            sqlParts.push(`ALTER TABLE public."${table.table_name}" ADD CONSTRAINT "${fk.name}" FOREIGN KEY ("${fk.column}") REFERENCES public."${fk.ref_table}"("${fk.ref_column}");\n`);
-          }
-        }
-      }
-    }
-
     // Re-enable FK checks
-    sqlParts.push(`\n-- Re-enable foreign key checks\nSET session_replication_role = 'origin';\n`);
-
-    // Get sequences in one query
-    const sequencesResult = await pgClient.queryObject<{ seqname: string; last_val: number }>(`
-      SELECT s.sequencename as seqname, COALESCE(
-        (SELECT last_value FROM pg_sequences WHERE schemaname = 'public' AND sequencename = s.sequencename),
-        1
-      ) as last_val
-      FROM pg_sequences s
-      WHERE s.schemaname = 'public'
-    `);
-
-    if (sequencesResult.rows.length > 0) {
-      sqlParts.push(`\n-- Sequences\n`);
-      for (const seq of sequencesResult.rows) {
-        sqlParts.push(`SELECT pg_catalog.setval('public."${seq.seqname}"', ${seq.last_val}, true);\n`);
-      }
-    }
-
-    // Get non-PK indexes
-    const indexesResult = await pgClient.queryObject<{ indexdef: string }>(`
-      SELECT indexdef FROM pg_indexes
-      WHERE schemaname = 'public'
-        AND indexname NOT IN (
-          SELECT constraint_name FROM information_schema.table_constraints 
-          WHERE constraint_type = 'PRIMARY KEY' AND table_schema = 'public'
-        )
-    `);
-
-    if (indexesResult.rows.length > 0) {
-      sqlParts.push(`\n-- Indexes\n`);
-      for (const idx of indexesResult.rows) {
-        sqlParts.push(`${idx.indexdef};\n`);
-      }
-    }
+    sqlParts.push(`\nSET session_replication_role = 'origin';\n`);
 
     // Footer
     const duration = Date.now() - startTime;
@@ -346,7 +196,6 @@ SET row_security = off;
 
     await pgClient.end();
 
-    // Join all parts
     const sqlContent = sqlParts.join('');
     const backupSize = new TextEncoder().encode(sqlContent).length;
     
@@ -362,7 +211,8 @@ SET row_security = off;
           size: backupSize,
           duration,
           database: targetDb,
-          format: 'sql'
+          format: 'sql',
+          truncated: totalRows >= MAX_TOTAL_ROWS || tablesWithData >= MAX_TABLES_WITH_DATA
         }
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -382,3 +232,13 @@ SET row_security = off;
     );
   }
 });
+
+// Escape SQL string values - simplified
+function escapeSqlValue(value: unknown): string {
+  if (value === null || value === undefined) return 'NULL';
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (typeof value === 'number') return String(value);
+  if (value instanceof Date) return `'${value.toISOString()}'`;
+  if (typeof value === 'object') return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
