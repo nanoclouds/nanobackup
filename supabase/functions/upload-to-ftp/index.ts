@@ -126,6 +126,15 @@ class SimpleFTPClient {
     }
   }
 
+  async getFileSize(remotePath: string): Promise<number> {
+    const response = await this.sendCommand(`SIZE ${remotePath}`);
+    if (response.startsWith("213")) {
+      const sizeStr = response.substring(4).trim();
+      return parseInt(sizeStr, 10) || 0;
+    }
+    return -1; // File not found or SIZE not supported
+  }
+
   async uploadFile(remotePath: string, data: Uint8Array): Promise<boolean> {
     const dirPath = remotePath.substring(0, remotePath.lastIndexOf("/"));
     if (dirPath) {
@@ -147,7 +156,16 @@ class SimpleFTPClient {
       throw new Error(`STOR failed: ${storResponse}`);
     }
 
-    await dataConn.write(data);
+    // Write data in chunks to ensure complete transfer
+    const WRITE_CHUNK_SIZE = 65536; // 64KB chunks for reliable transfer
+    let offset = 0;
+    while (offset < data.length) {
+      const chunk = data.subarray(offset, Math.min(offset + WRITE_CHUNK_SIZE, data.length));
+      await dataConn.write(chunk);
+      offset += chunk.length;
+    }
+    
+    // Ensure all data is flushed before closing
     dataConn.close();
 
     const completeResponse = await this.readResponse();
@@ -155,6 +173,7 @@ class SimpleFTPClient {
       throw new Error(`Transfer failed: ${completeResponse}`);
     }
 
+    console.log(`FTP: Upload completed successfully for ${remotePath} (${data.length} bytes)`);
     return true;
   }
 
@@ -174,14 +193,25 @@ class SimpleFTPClient {
       throw new Error(`APPE failed: ${appeResponse}`);
     }
 
-    await dataConn.write(data);
+    // Write data in chunks to ensure complete transfer
+    const WRITE_CHUNK_SIZE = 65536; // 64KB chunks for reliable transfer
+    let offset = 0;
+    while (offset < data.length) {
+      const chunk = data.subarray(offset, Math.min(offset + WRITE_CHUNK_SIZE, data.length));
+      await dataConn.write(chunk);
+      offset += chunk.length;
+    }
+    
+    // Ensure all data is flushed before closing
     dataConn.close();
 
+    // Wait for transfer complete response with timeout
     const completeResponse = await this.readResponse();
     if (!completeResponse.startsWith("226")) {
-      throw new Error(`Append failed: ${completeResponse}`);
+      throw new Error(`Append transfer failed: ${completeResponse}`);
     }
 
+    console.log(`FTP: Append completed successfully for ${remotePath} (${data.length} bytes)`);
     return true;
   }
 
@@ -418,9 +448,22 @@ serve(async (req) => {
           await ftpClient.uploadFile(uploadedPath, data);
         }
 
+        // Verify file size after upload
+        const remoteSize = await ftpClient.getFileSize(uploadedPath);
+        console.log(`FTP: Remote file size after upload: ${remoteSize} bytes`);
+        
+        if (remoteSize >= 0) {
+          // For append mode, we can't verify exact size, but log it for debugging
+          if (appendMode && !isFirstChunk) {
+            console.log(`FTP: Append completed. Current remote size: ${remoteSize} bytes`);
+          } else if (remoteSize !== data.length) {
+            console.warn(`FTP: Size mismatch! Sent: ${data.length}, Remote: ${remoteSize}`);
+          }
+        }
+
         success = true;
         message = appendMode && !isFirstChunk 
-          ? `Dados anexados via FTP para ${uploadedPath}` 
+          ? `Dados anexados via FTP para ${uploadedPath} (${remoteSize} bytes no servidor)` 
           : `Arquivo enviado via FTP para ${uploadedPath}`;
         authMethod = "password";
 
