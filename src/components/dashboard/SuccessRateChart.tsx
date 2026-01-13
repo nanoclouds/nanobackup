@@ -7,18 +7,15 @@ import {
   Tooltip, 
   ResponsiveContainer 
 } from 'recharts';
-
-const data = [
-  { date: '07 Jan', success: 100, failed: 0 },
-  { date: '08 Jan', success: 95, failed: 5 },
-  { date: '09 Jan', success: 100, failed: 0 },
-  { date: '10 Jan', success: 90, failed: 10 },
-  { date: '11 Jan', success: 100, failed: 0 },
-  { date: '12 Jan', success: 95, failed: 5 },
-  { date: 'Hoje', success: 93, failed: 7 },
-];
+import { useSuccessRateData } from '@/hooks/useSuccessRateData';
+import { Loader2 } from 'lucide-react';
 
 export function SuccessRateChart() {
+  const { data, isLoading } = useSuccessRateData();
+
+  // Check if there's any data with executions
+  const hasData = data && data.some(d => d.total > 0);
+
   return (
     <div className="rounded-lg border border-border bg-card p-6">
       <div className="mb-4">
@@ -26,52 +23,73 @@ export function SuccessRateChart() {
         <p className="text-sm text-muted-foreground">Últimos 7 dias</p>
       </div>
       <div className="h-[250px]">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data}>
-            <defs>
-              <linearGradient id="successGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="hsl(142 76% 36%)" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="hsl(142 76% 36%)" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid 
-              strokeDasharray="3 3" 
-              stroke="hsl(222 47% 16%)" 
-              vertical={false}
-            />
-            <XAxis 
-              dataKey="date" 
-              stroke="hsl(215 20% 55%)"
-              fontSize={12}
-              tickLine={false}
-              axisLine={false}
-            />
-            <YAxis 
-              stroke="hsl(215 20% 55%)"
-              fontSize={12}
-              tickLine={false}
-              axisLine={false}
-              tickFormatter={(value) => `${value}%`}
-              domain={[80, 100]}
-            />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: 'hsl(222 47% 10%)',
-                border: '1px solid hsl(222 47% 16%)',
-                borderRadius: '8px',
-                color: 'hsl(210 40% 98%)',
-              }}
-              formatter={(value: number) => [`${value}%`, 'Taxa de Sucesso']}
-            />
-            <Area
-              type="monotone"
-              dataKey="success"
-              stroke="hsl(142 76% 36%)"
-              strokeWidth={2}
-              fill="url(#successGradient)"
-            />
-          </AreaChart>
-        </ResponsiveContainer>
+        {isLoading ? (
+          <div className="flex h-full items-center justify-center">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : !hasData ? (
+          <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
+            <p className="text-sm">Nenhuma execução nos últimos 7 dias</p>
+            <p className="text-xs mt-1">Execute um backup para visualizar os dados</p>
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={data}>
+              <defs>
+                <linearGradient id="successGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="hsl(var(--success))" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="hsl(var(--success))" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid 
+                strokeDasharray="3 3" 
+                stroke="hsl(var(--border))" 
+                vertical={false}
+              />
+              <XAxis 
+                dataKey="date" 
+                stroke="hsl(var(--muted-foreground))"
+                fontSize={12}
+                tickLine={false}
+                axisLine={false}
+              />
+              <YAxis 
+                stroke="hsl(var(--muted-foreground))"
+                fontSize={12}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(value) => `${value}%`}
+                domain={[0, 100]}
+              />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: 'hsl(var(--card))',
+                  border: '1px solid hsl(var(--border))',
+                  borderRadius: '8px',
+                  color: 'hsl(var(--foreground))',
+                }}
+                formatter={(value: number, name: string) => {
+                  if (name === 'success') return [`${value}%`, 'Taxa de Sucesso'];
+                  return [`${value}%`, name];
+                }}
+                labelFormatter={(label, payload) => {
+                  if (payload && payload.length > 0) {
+                    const point = payload[0].payload;
+                    return `${label} (${point.total} execuções)`;
+                  }
+                  return label;
+                }}
+              />
+              <Area
+                type="monotone"
+                dataKey="success"
+                stroke="hsl(var(--success))"
+                strokeWidth={2}
+                fill="url(#successGradient)"
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
       </div>
     </div>
   );
