@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { decrypt } from "../_shared/crypto.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -195,6 +196,10 @@ serve(async (req) => {
       throw new Error("Destination not found");
     }
 
+    // Decrypt password and SSH key if encrypted
+    const password = destination.password ? await decrypt(destination.password) : null;
+    const sshKey = destination.ssh_key ? await decrypt(destination.ssh_key) : null;
+
     const startTime = Date.now();
     let success = false;
     let message = "";
@@ -222,11 +227,11 @@ serve(async (req) => {
             console.log(`SFTP: Server version: ${serverVersion}`);
             
             // Determine auth method
-            const authMethod = destination.ssh_key ? 'ssh-key' : 'password';
+            const authMethod = sshKey ? 'ssh-key' : 'password';
             
             // Validate SSH key if provided
-            if (destination.ssh_key) {
-              const keyValidation = validateSSHKey(destination.ssh_key);
+            if (sshKey) {
+              const keyValidation = validateSSHKey(sshKey);
               if (!keyValidation.valid) {
                 conn.close();
                 message = `Chave SSH inválida: ${keyValidation.error}`;
@@ -252,7 +257,7 @@ serve(async (req) => {
                   note: 'Verificação de escrita requer conexão SSH completa'
                 };
               }
-            } else if (destination.password) {
+            } else if (password) {
               // Password auth - just verify server is responding
               success = true;
               message = `Servidor SFTP online. Autenticação: Senha`;
@@ -300,7 +305,7 @@ serve(async (req) => {
 
         // Login
         console.log(`FTP: Logging in as ${destination.username}...`);
-        await ftpClient.login(destination.username, destination.password || "");
+        await ftpClient.login(destination.username, password || "");
         console.log(`FTP: Login successful`);
         details.loginSuccess = true;
 

@@ -432,6 +432,9 @@ export type Database = {
       }
       profiles: {
         Row: {
+          approved: boolean
+          approved_at: string | null
+          approved_by: string | null
           created_at: string
           email: string
           environments: Database["public"]["Enums"]["environment_type"][] | null
@@ -443,6 +446,9 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          approved?: boolean
+          approved_at?: string | null
+          approved_by?: string | null
           created_at?: string
           email: string
           environments?:
@@ -456,6 +462,9 @@ export type Database = {
           user_id: string
         }
         Update: {
+          approved?: boolean
+          approved_at?: string | null
+          approved_by?: string | null
           created_at?: string
           email?: string
           environments?:

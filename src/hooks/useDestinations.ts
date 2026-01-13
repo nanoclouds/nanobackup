@@ -23,6 +23,23 @@ export interface FtpDestination {
 
 export type CreateDestinationData = Omit<FtpDestination, 'id' | 'created_at' | 'updated_at' | 'created_by' | 'last_tested' | 'status'>;
 
+// Encrypt credentials via edge function
+async function encryptCredentials(type: 'instance' | 'destination', id: string, password?: string | null, ssh_key?: string | null) {
+  if (!password && !ssh_key) return;
+  
+  try {
+    const { error } = await supabase.functions.invoke('encrypt-credentials', {
+      body: { type, id, password: password || undefined, ssh_key: ssh_key || undefined },
+    });
+    
+    if (error) {
+      console.error('Failed to encrypt credentials:', error);
+    }
+  } catch (e) {
+    console.error('Failed to encrypt credentials:', e);
+  }
+}
+
 export function useDestinations() {
   return useQuery({
     queryKey: ['destinations'],
@@ -56,6 +73,12 @@ export function useCreateDestination() {
         .single();
       
       if (error) throw error;
+      
+      // Encrypt password and/or SSH key after creation
+      if (data && (destination.password || destination.ssh_key)) {
+        await encryptCredentials('destination', data.id, destination.password, destination.ssh_key);
+      }
+      
       return data;
     },
     onSuccess: () => {
@@ -72,15 +95,32 @@ export function useUpdateDestination() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async ({ id, ...updates }: Partial<FtpDestination> & { id: string }) => {
+    mutationFn: async ({ id, password, ssh_key, ...updates }: Partial<FtpDestination> & { id: string }) => {
+      // Prepare update payload
+      const updatePayload: Record<string, unknown> = { ...updates };
+      
+      // If password/ssh_key is provided, include it temporarily (will be encrypted)
+      if (password) {
+        updatePayload.password = password;
+      }
+      if (ssh_key) {
+        updatePayload.ssh_key = ssh_key;
+      }
+      
       const { data, error } = await supabase
         .from('ftp_destinations')
-        .update(updates)
+        .update(updatePayload)
         .eq('id', id)
         .select()
         .single();
       
       if (error) throw error;
+      
+      // Encrypt credentials if they were updated
+      if (password || ssh_key) {
+        await encryptCredentials('destination', id, password, ssh_key);
+      }
+      
       return data;
     },
     onSuccess: () => {
