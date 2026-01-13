@@ -498,6 +498,39 @@ export function useRunBackup() {
             
             allLogs += `[${new Date().toISOString()}] ✓ Dump completo: ${totalTablesProcessed} tabelas, ${totalRowsProcessed} registros\n`;
             
+            // Compress the file on FTP if compression is enabled
+            if (compression !== 'none' && destination) {
+              const uncompressedPath = ftpPath.replace('.gz', '').replace('.zst', '');
+              const compressedPath = ftpPath; // Original path includes compression extension
+              
+              dbLogs += `[${new Date().toISOString()}] Compactando arquivo no servidor FTP (${compression.toUpperCase()})...\n`;
+              allLogs += `[${new Date().toISOString()}] Compactando arquivo com ${compression.toUpperCase()}...\n`;
+              
+              const { data: compressResult, error: compressError } = await supabase.functions.invoke('compress-ftp-file', {
+                body: {
+                  destinationId: destination.id,
+                  sourceFilePath: uncompressedPath,
+                  targetFilePath: compressedPath,
+                  compression: compression,
+                  deleteOriginal: true
+                }
+              });
+              
+              if (compressError || !compressResult?.success) {
+                dbLogs += `[${new Date().toISOString()}] ⚠️ Aviso: Falha na compactação: ${compressError?.message || compressResult?.message}\n`;
+                dbLogs += `[${new Date().toISOString()}] Arquivo mantido sem compactação: ${uncompressedPath}\n`;
+                allLogs += `[${new Date().toISOString()}] ⚠️ Compactação falhou, mantendo arquivo original\n`;
+              } else {
+                const originalKB = (compressResult.originalSize / 1024).toFixed(2);
+                const compressedKB = (compressResult.compressedSize / 1024).toFixed(2);
+                fileSize = compressResult.compressedSize;
+                
+                dbLogs += `[${new Date().toISOString()}] ✓ Compactação concluída!\n`;
+                dbLogs += `[${new Date().toISOString()}] Original: ${originalKB} KB → Compactado: ${compressedKB} KB (${compressResult.compressionRatio}% redução)\n`;
+                allLogs += `[${new Date().toISOString()}] ✓ Compactado: ${originalKB} KB → ${compressedKB} KB (${compressResult.compressionRatio}% redução)\n`;
+              }
+            }
+            
             // Generate a simple checksum based on stats (since we streamed, we can't hash full content)
             const checksumData = `${db.name}:${totalTablesProcessed}:${totalRowsProcessed}:${fileSize}:${new Date().toISOString()}`;
             const encoder = new TextEncoder();
