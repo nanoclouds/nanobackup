@@ -27,7 +27,9 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronUp,
-  FileDown
+  FileDown,
+  RotateCcw,
+  Timer
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -333,6 +335,12 @@ export default function ExecutionDetails() {
                     {execution.backup_jobs?.name || 'Job desconhecido'}
                   </h2>
                   <StatusBadge status={execution.status} />
+                  {execution.retry_count > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600">
+                      <RotateCcw className="h-3 w-3" />
+                      Tentativa {execution.retry_count + 1}
+                    </span>
+                  )}
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Iniciado {formatDistanceToNow(new Date(execution.started_at), { addSuffix: true, locale: ptBR })}
@@ -372,6 +380,63 @@ export default function ExecutionDetails() {
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Left Column - Details */}
         <div className="lg:col-span-2 space-y-6">
+          {/* Retry Info */}
+          {execution.next_retry_at && execution.status === 'failed' && (
+            <Card className="border-amber-500/30 bg-amber-500/5">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base text-amber-600">
+                  <Timer className="h-5 w-5" />
+                  Re-tentativa Agendada
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-amber-700">
+                      Uma nova tentativa será executada automaticamente em{' '}
+                      <span className="font-medium">
+                        {formatDistanceToNow(new Date(execution.next_retry_at), { addSuffix: false, locale: ptBR })}
+                      </span>
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Agendado para: {format(new Date(execution.next_retry_at), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                    </p>
+                  </div>
+                  {execution.backup_jobs?.max_retries && (
+                    <div className="text-right">
+                      <p className="text-xs text-muted-foreground">Tentativas</p>
+                      <p className="text-sm font-medium text-amber-600">
+                        {execution.retry_count + 1} / {execution.backup_jobs.max_retries}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Retries Exhausted Info */}
+          {execution.status === 'failed' && 
+           !execution.next_retry_at && 
+           execution.backup_jobs?.max_retries && 
+           execution.backup_jobs.max_retries > 0 &&
+           execution.retry_count >= execution.backup_jobs.max_retries && (
+            <Card className="border-destructive/30 bg-destructive/5">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base text-destructive">
+                  <RotateCcw className="h-5 w-5" />
+                  Re-tentativas Esgotadas
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-destructive/80">
+                  Todas as {execution.backup_jobs.max_retries} tentativas automáticas foram esgotadas.
+                  Verifique os logs e execute o backup manualmente.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Error Message */}
           {execution.error_message && (
             <Card className="border-destructive/30 bg-destructive/5">

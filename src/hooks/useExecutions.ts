@@ -32,10 +32,15 @@ export interface BackupExecution {
   error_message: string | null;
   logs: string | null;
   created_at: string;
+  retry_count: number;
+  parent_execution_id: string | null;
+  next_retry_at: string | null;
   // Joined data
   backup_jobs?: {
     id: string;
     name: string;
+    max_retries: number;
+    retry_delay_minutes: number;
     postgres_instances?: {
       id: string;
       name: string;
@@ -48,6 +53,8 @@ export interface BackupExecution {
   };
   // Database backups
   execution_database_backups?: DatabaseBackup[];
+  // Parent execution (for retries)
+  parent_execution?: BackupExecution | null;
 }
 
 export function useExecutions(jobId?: string) {
@@ -61,6 +68,8 @@ export function useExecutions(jobId?: string) {
           backup_jobs (
             id, 
             name,
+            max_retries,
+            retry_delay_minutes,
             postgres_instances (id, name, host),
             ftp_destinations (id, name)
           ),
@@ -92,6 +101,8 @@ export function useExecutionDetails(executionId: string) {
           backup_jobs (
             id, 
             name,
+            max_retries,
+            retry_delay_minutes,
             postgres_instances (id, name, host),
             ftp_destinations (id, name)
           ),
@@ -202,7 +213,8 @@ export function useRunBackup() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async (jobId: string) => {
+    mutationFn: async (params: { jobId: string; parentExecutionId?: string; retryCount?: number }) => {
+      const { jobId, parentExecutionId, retryCount = 0 } = params;
       const startTime = new Date();
       
       // First, get the job with instance details to fetch discovered databases
@@ -211,6 +223,8 @@ export function useRunBackup() {
         .select(`
           id,
           name,
+          max_retries,
+          retry_delay_minutes,
           postgres_instances (
             id, 
             name, 
@@ -233,19 +247,26 @@ export function useRunBackup() {
         : DEFAULT_DATABASES;
       
       // Create execution record
+      const isRetry = retryCount > 0;
+      const logPrefix = isRetry ? `[RETRY ${retryCount}] ` : '';
+      
       const { data: execution, error: execError } = await supabase
         .from('backup_executions')
         .insert({
           job_id: jobId,
           status: 'running',
           started_at: startTime.toISOString(),
-          logs: `[${startTime.toISOString()}] Iniciando backup de todos os bancos da instância...\n`,
+          retry_count: retryCount,
+          parent_execution_id: parentExecutionId || null,
+          logs: `[${startTime.toISOString()}] ${logPrefix}Iniciando backup de todos os bancos da instância...\n`,
         })
         .select(`
           *,
           backup_jobs (
             id, 
             name,
+            max_retries,
+            retry_delay_minutes,
             postgres_instances (id, name, host)
           )
         `)
@@ -264,10 +285,17 @@ export function useRunBackup() {
 
       // Execute backup for each database
       const executeBackup = async () => {
-        let allLogs = `[${startTime.toISOString()}] Iniciando backup de todos os bancos da instância...\n`;
+        const isRetry = retryCount > 0;
+        const logPrefix = isRetry ? `[RETRY ${retryCount}] ` : '';
+        
+        let allLogs = `[${startTime.toISOString()}] ${logPrefix}Iniciando backup de todos os bancos da instância...\n`;
         allLogs += `[${new Date().toISOString()}] Conectando à instância ${job.postgres_instances?.name} (${job.postgres_instances?.host})...\n`;
         allLogs += `[${new Date().toISOString()}] ${databases.length} bancos de dados encontrados\n`;
-        allLogs += `[${new Date().toISOString()}] Formato: pg_dump compatível com PostgreSQL 18.1\n\n`;
+        allLogs += `[${new Date().toISOString()}] Formato: pg_dump compatível com PostgreSQL 18.1\n`;
+        if (isRetry) {
+          allLogs += `[${new Date().toISOString()}] Esta é a tentativa ${retryCount} de ${job.max_retries}\n`;
+        }
+        allLogs += `\n`;
         
         let totalSize = 0;
         let successCount = 0;
@@ -367,11 +395,26 @@ export function useRunBackup() {
                              successCount === 0 ? 'failed' : 
                              'success'; // Partial success counts as success
         
+        // Check if we should schedule a retry
+        const shouldRetry = overallStatus === 'failed' && 
+                           job.max_retries > 0 && 
+                           retryCount < job.max_retries;
+        
+        const nextRetryAt = shouldRetry 
+          ? new Date(endTime.getTime() + job.retry_delay_minutes * 60 * 1000)
+          : null;
+        
         allLogs += `\n[${endTime.toISOString()}] ═══════════════════════════════════════\n`;
         allLogs += `[${endTime.toISOString()}] Resumo: ${successCount}/${databases.length} bancos processados com sucesso\n`;
         allLogs += `[${endTime.toISOString()}] Tamanho total: ${(totalSize / 1024 / 1024).toFixed(2)} MB\n`;
         allLogs += `[${endTime.toISOString()}] Duração total: ${totalDuration}s\n`;
         allLogs += `[${endTime.toISOString()}] Status: ${overallStatus === 'success' ? 'CONCLUÍDO' : 'FALHOU'}\n`;
+        
+        if (shouldRetry && nextRetryAt) {
+          allLogs += `[${endTime.toISOString()}] ⏰ Re-tentativa ${retryCount + 1}/${job.max_retries} agendada para ${nextRetryAt.toLocaleString('pt-BR')}\n`;
+        } else if (overallStatus === 'failed' && retryCount >= job.max_retries && job.max_retries > 0) {
+          allLogs += `[${endTime.toISOString()}] ❌ Todas as ${job.max_retries} tentativas foram esgotadas\n`;
+        }
         
         // Update main execution
         await supabase
@@ -383,6 +426,7 @@ export function useRunBackup() {
             file_size: totalSize,
             logs: allLogs,
             error_message: failedCount > 0 ? `${failedCount} banco(s) falharam` : null,
+            next_retry_at: nextRetryAt?.toISOString() || null,
           })
           .eq('id', execution.id);
         
@@ -394,6 +438,12 @@ export function useRunBackup() {
         
         // Create alert for failures
         if (failedCount > 0) {
+          const retryInfo = shouldRetry 
+            ? `. Re-tentativa agendada para ${nextRetryAt?.toLocaleString('pt-BR')}`
+            : retryCount >= job.max_retries && job.max_retries > 0
+              ? `. Todas as ${job.max_retries} tentativas foram esgotadas`
+              : '';
+          
           await supabase
             .from('alerts')
             .insert({
@@ -401,7 +451,7 @@ export function useRunBackup() {
               execution_id: execution.id,
               type: 'failure',
               title: `Backup parcial: ${failedCount} banco(s) falharam`,
-              message: `${successCount} de ${databases.length} bancos foram processados com sucesso`,
+              message: `${successCount} de ${databases.length} bancos foram processados com sucesso${retryInfo}`,
             });
         }
         
@@ -415,7 +465,11 @@ export function useRunBackup() {
         } else if (successCount > 0) {
           toast.warning(`Backup parcial: ${successCount}/${databases.length} bancos processados`);
         } else {
-          toast.error('Backup falhou para todos os bancos');
+          if (shouldRetry) {
+            toast.error(`Backup falhou. Re-tentativa em ${job.retry_delay_minutes} minutos`);
+          } else {
+            toast.error('Backup falhou para todos os bancos');
+          }
         }
       };
       

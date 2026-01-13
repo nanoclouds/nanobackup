@@ -14,6 +14,8 @@ export interface BackupJob {
   retention_count: number | null;
   retention_days: number | null;
   timeout: number;
+  max_retries: number;
+  retry_delay_minutes: number;
   status: 'scheduled' | 'running' | 'success' | 'failed' | 'cancelled';
   last_run: string | null;
   next_run: string | null;
