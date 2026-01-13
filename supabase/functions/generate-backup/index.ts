@@ -7,10 +7,10 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Process tables in smaller chunks to avoid CPU timeout
-const TABLES_PER_CHUNK = 10;
-const MAX_ROWS_PER_BATCH = 300;
-const BATCH_SIZE_ROWS = 200;
+// Reduced limits to avoid CPU timeout
+const TABLES_PER_CHUNK = 5;  // Reduced from 10
+const BATCH_SIZE_ROWS = 100; // Reduced from 200
+const MAX_STRING_LENGTH = 50000; // Truncate very large strings
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -38,7 +38,7 @@ serve(async (req) => {
       format = 'sql', 
       includeData = true,
       chunkIndex = 0,
-      getMetadataOnly = false  // New: just get table list and chunk count
+      getMetadataOnly = false
     } = await req.json();
     
     if (!instanceId) throw new Error("instanceId is required");
@@ -184,7 +184,7 @@ SET session_replication_role = 'replica';
           if (rowCount > 0) {
             const columnNames = columns.map(c => `"${c.column_name}"`).join(', ');
             
-            // Fetch ALL data, but in batches
+            // Fetch data in small batches
             let offset = 0;
             let tableRows = 0;
             
@@ -199,14 +199,10 @@ SET session_replication_role = 'replica';
               
               if (rows.length === 0) break;
               
-              // Generate INSERT statements in smaller batches
-              for (let i = 0; i < rows.length; i += 50) {
-                const batch = rows.slice(i, i + 50);
-                const valuesArray = batch.map(row => {
-                  const vals = columns.map(col => escapeSqlValue(row[col.column_name])).join(', ');
-                  return `(${vals})`;
-                });
-                sqlParts.push(`INSERT INTO public."${tableName}" (${columnNames}) VALUES\n${valuesArray.join(',\n')};\n`);
+              // Generate INSERT statements one row at a time to reduce memory
+              for (const row of rows) {
+                const vals = columns.map(col => escapeSqlValue(row[col.column_name])).join(', ');
+                sqlParts.push(`INSERT INTO public."${tableName}" (${columnNames}) VALUES (${vals});\n`);
               }
               
               tableRows += rows.length;
@@ -290,6 +286,23 @@ function escapeSqlValue(value: unknown): string {
   if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
   if (typeof value === 'number') return String(value);
   if (value instanceof Date) return `'${value.toISOString()}'`;
-  if (typeof value === 'object') return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
-  return `'${String(value).replace(/'/g, "''")}'`;
+  if (value instanceof Uint8Array) {
+    // Handle binary data as hex
+    const hex = Array.from(value).map(b => b.toString(16).padStart(2, '0')).join('');
+    return `'\\x${hex}'`;
+  }
+  if (typeof value === 'object') {
+    const json = JSON.stringify(value).replace(/'/g, "''");
+    // Truncate very large JSON objects
+    if (json.length > MAX_STRING_LENGTH) {
+      return `'${json.substring(0, MAX_STRING_LENGTH)}...[TRUNCATED]'`;
+    }
+    return `'${json}'`;
+  }
+  const str = String(value).replace(/'/g, "''");
+  // Truncate very large strings (like base64 images)
+  if (str.length > MAX_STRING_LENGTH) {
+    return `'${str.substring(0, MAX_STRING_LENGTH)}...[TRUNCATED]'`;
+  }
+  return `'${str}'`;
 }
