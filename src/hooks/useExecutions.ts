@@ -411,9 +411,7 @@ export function useRunBackup() {
             };
             
             const localChecksum = generateChecksum();
-            // 98% chance checksums match (simulating real-world scenario)
-            const checksumMatch = Math.random() > 0.02;
-            const remoteChecksum = checksumMatch ? localChecksum : generateChecksum();
+            const MAX_UPLOAD_RETRIES = 3;
             
             let dbLogs = `[${dbStartTime.toISOString()}] Executando: ${pgDumpCmd}\n`;
             if (compression !== 'none') {
@@ -423,36 +421,80 @@ export function useRunBackup() {
             dbLogs += `[${new Date().toISOString()}] Calculando checksum SHA-256 do arquivo local...\n`;
             dbLogs += `[${new Date().toISOString()}] Checksum local: ${localChecksum}\n`;
             
-            if (destination) {
-              dbLogs += `[${new Date().toISOString()}] Conectando ao destino ${destination.protocol.toUpperCase()}://${destination.host}...\n`;
-              dbLogs += `[${new Date().toISOString()}] Enviando arquivo para: ${ftpPath}\n`;
-              dbLogs += `[${new Date().toISOString()}] Upload concluído, verificando integridade...\n`;
-              dbLogs += `[${new Date().toISOString()}] Calculando checksum SHA-256 do arquivo remoto...\n`;
-              dbLogs += `[${new Date().toISOString()}] Checksum remoto: ${remoteChecksum}\n`;
-              
-              if (checksumMatch) {
-                dbLogs += `[${new Date().toISOString()}] ✓ Verificação de integridade: SUCESSO (checksums correspondem)\n`;
-              } else {
-                dbLogs += `[${new Date().toISOString()}] ✗ Verificação de integridade: FALHA (checksums não correspondem!)\n`;
-                dbLogs += `[${new Date().toISOString()}] ⚠ ATENÇÃO: O arquivo pode estar corrompido. Recomenda-se re-upload.\n`;
-              }
-            }
-            
-            dbLogs += `[${dbEndTime.toISOString()}] Backup concluído em ${duration}s\n`;
-            
             allLogs += `[${new Date().toISOString()}] Executando pg_dump para ${db.name}...\n`;
             if (compression !== 'none') {
               allLogs += `[${new Date().toISOString()}] Comprimindo com ${compressionLabel}...\n`;
             }
             allLogs += `[${new Date().toISOString()}] Checksum local: ${localChecksum.substring(0, 16)}...\n`;
+            
+            // Upload with automatic retry on checksum mismatch
+            let uploadAttempt = 0;
+            let checksumMatch = false;
+            let remoteChecksum = '';
+            
+            while (uploadAttempt < MAX_UPLOAD_RETRIES && !checksumMatch) {
+              uploadAttempt++;
+              
+              if (destination) {
+                if (uploadAttempt === 1) {
+                  dbLogs += `[${new Date().toISOString()}] Conectando ao destino ${destination.protocol.toUpperCase()}://${destination.host}...\n`;
+                } else {
+                  dbLogs += `[${new Date().toISOString()}] ───── Re-upload automático (tentativa ${uploadAttempt}/${MAX_UPLOAD_RETRIES}) ─────\n`;
+                  allLogs += `[${new Date().toISOString()}] 🔄 Re-upload automático (tentativa ${uploadAttempt}/${MAX_UPLOAD_RETRIES})...\n`;
+                  // Small delay before retry
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                
+                dbLogs += `[${new Date().toISOString()}] Enviando arquivo para: ${ftpPath}\n`;
+                
+                // Simulate upload time
+                await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 500));
+                
+                dbLogs += `[${new Date().toISOString()}] Upload concluído, verificando integridade...\n`;
+                dbLogs += `[${new Date().toISOString()}] Calculando checksum SHA-256 do arquivo remoto...\n`;
+                
+                // Each retry has higher success chance (simulating real-world scenario)
+                // Attempt 1: 98%, Attempt 2: 99%, Attempt 3: 99.5%
+                const successChance = 0.98 + (uploadAttempt - 1) * 0.005;
+                checksumMatch = Math.random() < successChance;
+                remoteChecksum = checksumMatch ? localChecksum : generateChecksum();
+                
+                dbLogs += `[${new Date().toISOString()}] Checksum remoto: ${remoteChecksum}\n`;
+                
+                if (checksumMatch) {
+                  dbLogs += `[${new Date().toISOString()}] ✓ Verificação de integridade: SUCESSO (checksums correspondem)\n`;
+                  if (uploadAttempt > 1) {
+                    dbLogs += `[${new Date().toISOString()}] ✓ Re-upload bem-sucedido na tentativa ${uploadAttempt}\n`;
+                    allLogs += `[${new Date().toISOString()}] ✓ Re-upload bem-sucedido na tentativa ${uploadAttempt}\n`;
+                  }
+                } else {
+                  dbLogs += `[${new Date().toISOString()}] ✗ Verificação de integridade: FALHA (checksums não correspondem!)\n`;
+                  if (uploadAttempt < MAX_UPLOAD_RETRIES) {
+                    dbLogs += `[${new Date().toISOString()}] ⚠ Preparando re-upload automático...\n`;
+                  } else {
+                    dbLogs += `[${new Date().toISOString()}] ❌ Todas as ${MAX_UPLOAD_RETRIES} tentativas de upload falharam\n`;
+                    allLogs += `[${new Date().toISOString()}] ❌ Falha após ${MAX_UPLOAD_RETRIES} tentativas de upload\n`;
+                  }
+                }
+              } else {
+                // No destination, mark as success
+                checksumMatch = true;
+              }
+            }
+            
+            const dbFinalEndTime = new Date();
+            const finalDuration = Math.floor((dbFinalEndTime.getTime() - dbStartTime.getTime()) / 1000);
+            
+            dbLogs += `[${dbFinalEndTime.toISOString()}] Backup concluído em ${finalDuration}s\n`;
+            
             allLogs += `[${new Date().toISOString()}] Enviando para FTP: ${ftpPath}\n`;
             
             if (checksumMatch) {
               allLogs += `[${new Date().toISOString()}] ✓ Integridade verificada: checksums correspondem\n`;
-              allLogs += `[${dbEndTime.toISOString()}] ✓ ${db.name} -> ${ftpPath} (${(fileSize / 1024 / 1024).toFixed(2)} MB)\n`;
+              allLogs += `[${dbFinalEndTime.toISOString()}] ✓ ${db.name} -> ${ftpPath} (${(fileSize / 1024 / 1024).toFixed(2)} MB)${uploadAttempt > 1 ? ` [${uploadAttempt} tentativas]` : ''}\n`;
             } else {
-              allLogs += `[${new Date().toISOString()}] ⚠ ALERTA: Falha na verificação de integridade!\n`;
-              allLogs += `[${dbEndTime.toISOString()}] ⚠ ${db.name} -> ${ftpPath} (${(fileSize / 1024 / 1024).toFixed(2)} MB) [CHECKSUM MISMATCH]\n`;
+              allLogs += `[${new Date().toISOString()}] ⚠ ALERTA: Falha na verificação de integridade após ${MAX_UPLOAD_RETRIES} tentativas!\n`;
+              allLogs += `[${dbFinalEndTime.toISOString()}] ⚠ ${db.name} -> ${ftpPath} (${(fileSize / 1024 / 1024).toFixed(2)} MB) [CHECKSUM MISMATCH]\n`;
             }
             
             await supabase
@@ -463,14 +505,14 @@ export function useRunBackup() {
                 file_size: fileSize,
                 storage_path: ftpPath,
                 checksum: `sha256:${localChecksum}`,
-                completed_at: dbEndTime.toISOString(),
-                duration,
+                completed_at: dbFinalEndTime.toISOString(),
+                duration: finalDuration,
                 logs: dbLogs,
-                error_message: checksumMatch ? null : 'Falha na verificação de integridade: checksum remoto não corresponde ao local',
+                error_message: checksumMatch ? null : `Falha na verificação de integridade após ${MAX_UPLOAD_RETRIES} tentativas de re-upload`,
               })
               .eq('id', backupId);
             
-            // If checksum mismatch, count as failed
+            // If checksum mismatch after all retries, count as failed
             if (!checksumMatch) {
               successCount--;
               failedCount++;
