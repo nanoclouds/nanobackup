@@ -223,59 +223,71 @@ export function useRunBackupWithProgress(
               throw new Error(metaError?.message || metadata?.message || 'Falha ao obter metadados');
             }
             
-            const totalChunks = metadata.metadata?.totalChunks || 1;
+            const estimatedChunks = metadata.metadata?.estimatedChunks || 1;
             const totalTables = metadata.metadata?.totalTables || 0;
+            const totalRowsInDb = metadata.metadata?.totalRows || 0;
             
-            dbLogs += `[${new Date().toISOString()}] ${totalTables} tabelas em ${totalChunks} chunks\n`;
+            dbLogs += `[${new Date().toISOString()}] ${totalTables} tabelas, ${totalRowsInDb} linhas, ~${estimatedChunks} chunks estimados\n`;
             
             let totalTablesProcessed = 0;
             let totalRowsProcessed = 0;
             let totalBytesUploaded = 0;
+            let chunkCount = 0;
             
-            // Process each chunk
-            for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+            // Process chunks incrementally until no more data
+            let cursor: { tableIndex: number; rowOffset: number } | null = null;
+            let hasMoreData = true;
+            
+            while (hasMoreData) {
+              chunkCount++;
+              
               // Check for cancellation before each chunk
               if (checkCancelled && checkCancelled()) {
                 throw new Error('Cancelado pelo usuário');
               }
               
-              const isFirstChunk = chunkIdx === 0;
-              const isLastChunk = chunkIdx === totalChunks - 1;
+              const isFirstChunk = cursor === null;
               
               // Update progress: generating phase
               onProgress({
                 executionId: execution.id,
                 jobName: job.name,
                 databaseName: db.name,
-                currentChunk: chunkIdx + 1,
-                totalChunks,
+                currentChunk: chunkCount,
+                totalChunks: Math.max(estimatedChunks, chunkCount),
                 currentDatabase: i + 1,
                 totalDatabases: databases.length,
                 phase: 'generating',
-                message: `Gerando chunk ${chunkIdx + 1}/${totalChunks}...`,
+                message: `Gerando chunk ${chunkCount}... (${totalRowsProcessed}/${totalRowsInDb} linhas)`,
                 startedAt: startTime,
               });
               
-              // Generate chunk
+              // Generate chunk with cursor
               const { data: chunkResult, error: chunkError } = await supabase.functions.invoke('generate-backup', {
                 body: {
                   instanceId: job.postgres_instances?.id,
                   databaseName: db.name,
                   format: backupFormat,
                   includeData: true,
-                  chunkIndex: chunkIdx
+                  cursor: cursor
                 }
               });
               
               if (chunkError || !chunkResult?.success) {
-                throw new Error(`Chunk ${chunkIdx + 1} falhou: ${chunkError?.message || chunkResult?.message}`);
+                throw new Error(`Chunk ${chunkCount} falhou: ${chunkError?.message || chunkResult?.message}`);
               }
               
               const chunkContent = chunkResult.content;
               const chunkSize = chunkResult.stats?.size || 0;
+              const rowsInChunk = chunkResult.stats?.rowsInChunk || 0;
               
-              totalTablesProcessed += chunkResult.stats?.tables || 0;
-              totalRowsProcessed += chunkResult.stats?.rows || 0;
+              totalTablesProcessed = chunkResult.stats?.totalTables || totalTablesProcessed;
+              totalRowsProcessed += rowsInChunk;
+              
+              // Update pagination state
+              hasMoreData = chunkResult.pagination?.hasMoreData || false;
+              cursor = chunkResult.pagination?.nextCursor || null;
+              const isLastChunk = chunkResult.pagination?.isLastChunk || false;
               
               // Check for cancellation before upload
               if (checkCancelled && checkCancelled()) {
@@ -287,12 +299,12 @@ export function useRunBackupWithProgress(
                 executionId: execution.id,
                 jobName: job.name,
                 databaseName: db.name,
-                currentChunk: chunkIdx + 1,
-                totalChunks,
+                currentChunk: chunkCount,
+                totalChunks: hasMoreData ? Math.max(estimatedChunks, chunkCount + 1) : chunkCount,
                 currentDatabase: i + 1,
                 totalDatabases: databases.length,
                 phase: 'uploading',
-                message: `Enviando chunk ${chunkIdx + 1}/${totalChunks}...`,
+                message: `Enviando chunk ${chunkCount}... (${totalRowsProcessed}/${totalRowsInDb} linhas)`,
                 startedAt: startTime,
               });
               
@@ -312,14 +324,16 @@ export function useRunBackupWithProgress(
                 });
                 
                 if (uploadError || !uploadResult?.success) {
-                  throw new Error(`Upload chunk ${chunkIdx + 1} falhou: ${uploadError?.message || uploadResult?.message}`);
+                  throw new Error(`Upload chunk ${chunkCount} falhou: ${uploadError?.message || uploadResult?.message}`);
                 }
                 
                 totalBytesUploaded += chunkSize;
               }
               
-              dbLogs += `[${new Date().toISOString()}] Chunk ${chunkIdx + 1}/${totalChunks}: ${chunkResult.stats?.tables} tabelas, ${(chunkSize / 1024).toFixed(2)} KB\n`;
+              dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB (total: ${totalRowsProcessed}/${totalRowsInDb})\n`;
             }
+            
+            dbLogs += `[${new Date().toISOString()}] ✓ Todos os ${totalRowsProcessed} registros processados em ${chunkCount} chunks\n`;
             
             fileSize = totalBytesUploaded;
             
@@ -334,8 +348,8 @@ export function useRunBackupWithProgress(
                 executionId: execution.id,
                 jobName: job.name,
                 databaseName: db.name,
-                currentChunk: totalChunks,
-                totalChunks,
+                currentChunk: chunkCount,
+                totalChunks: chunkCount,
                 currentDatabase: i + 1,
                 totalDatabases: databases.length,
                 phase: 'compressing',
