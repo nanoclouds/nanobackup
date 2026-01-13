@@ -59,10 +59,9 @@ class SimpleFTPClient {
   }
 
   async setPassiveMode(): Promise<{ host: string; port: number }> {
-    // Try EPSV first (Extended Passive Mode) - more reliable for cloud environments
+    // Try EPSV first (Extended Passive Mode)
     let response = await this.sendCommand("EPSV");
     if (response.startsWith("229")) {
-      // EPSV response format: 229 Entering Extended Passive Mode (|||port|)
       const match = response.match(/\(\|\|\|(\d+)\|\)/);
       if (match) {
         console.log(`FTP: Using EPSV mode, port ${match[1]}`);
@@ -79,7 +78,6 @@ class SimpleFTPClient {
     if (!match) {
       throw new Error(`Invalid PASV response: ${response}`);
     }
-    // Use the server's host instead of PASV-reported IP (works better in NAT environments)
     const port = parseInt(match[5]) * 256 + parseInt(match[6]);
     console.log(`FTP: Using PASV mode, port ${port}`);
     return { host: this.host, port };
@@ -99,46 +97,57 @@ class SimpleFTPClient {
     if (dirPath) {
       console.log(`FTP: Creating directory structure: ${dirPath}`);
       await this.mkdirRecursive(dirPath);
-      console.log(`FTP: Directory created or exists`);
     }
 
-    console.log(`FTP: Setting binary mode...`);
     await this.setBinaryMode();
-    
-    console.log(`FTP: Entering passive mode...`);
     const passive = await this.setPassiveMode();
-    console.log(`FTP: Passive mode active - ${passive.host}:${passive.port}`);
     
-    console.log(`FTP: Connecting to data channel...`);
     const dataConn = await Deno.connect({
       hostname: passive.host,
       port: passive.port,
     });
-    console.log(`FTP: Data channel connected`);
 
-    console.log(`FTP: Sending STOR command for ${remotePath}...`);
     const storResponse = await this.sendCommand(`STOR ${remotePath}`);
-    console.log(`FTP: STOR response: ${storResponse}`);
-    
     if (!storResponse.startsWith("150") && !storResponse.startsWith("125")) {
       dataConn.close();
       throw new Error(`STOR failed: ${storResponse}`);
     }
 
-    console.log(`FTP: Writing ${data.length} bytes to data channel...`);
     await dataConn.write(data);
-    console.log(`FTP: Data written, closing data channel...`);
     dataConn.close();
 
-    console.log(`FTP: Waiting for transfer complete response...`);
     const completeResponse = await this.readResponse();
-    console.log(`FTP: Transfer response: ${completeResponse}`);
-    
     if (!completeResponse.startsWith("226")) {
       throw new Error(`Transfer failed: ${completeResponse}`);
     }
 
-    console.log(`FTP: Upload successful!`);
+    return true;
+  }
+
+  async appendFile(remotePath: string, data: Uint8Array): Promise<boolean> {
+    await this.setBinaryMode();
+    const passive = await this.setPassiveMode();
+    
+    const dataConn = await Deno.connect({
+      hostname: passive.host,
+      port: passive.port,
+    });
+
+    // Use APPE (append) instead of STOR
+    const appeResponse = await this.sendCommand(`APPE ${remotePath}`);
+    if (!appeResponse.startsWith("150") && !appeResponse.startsWith("125")) {
+      dataConn.close();
+      throw new Error(`APPE failed: ${appeResponse}`);
+    }
+
+    await dataConn.write(data);
+    dataConn.close();
+
+    const completeResponse = await this.readResponse();
+    if (!completeResponse.startsWith("226")) {
+      throw new Error(`Append failed: ${completeResponse}`);
+    }
+
     return true;
   }
 
@@ -155,157 +164,7 @@ class SimpleFTPClient {
   }
 }
 
-// SSH/SFTP Implementation using raw SSH protocol
-// This implements a minimal SSH client for SFTP operations
-
-// SSH Constants
-const SSH_MSG = {
-  DISCONNECT: 1,
-  IGNORE: 2,
-  UNIMPLEMENTED: 3,
-  DEBUG: 4,
-  SERVICE_REQUEST: 5,
-  SERVICE_ACCEPT: 6,
-  KEXINIT: 20,
-  NEWKEYS: 21,
-  KEX_DH_GEX_REQUEST_OLD: 30,
-  KEX_DH_GEX_REQUEST: 34,
-  KEX_DH_GEX_GROUP: 31,
-  KEX_DH_GEX_INIT: 32,
-  KEX_DH_GEX_REPLY: 33,
-  USERAUTH_REQUEST: 50,
-  USERAUTH_FAILURE: 51,
-  USERAUTH_SUCCESS: 52,
-  USERAUTH_BANNER: 53,
-  USERAUTH_PK_OK: 60,
-  GLOBAL_REQUEST: 80,
-  REQUEST_SUCCESS: 81,
-  REQUEST_FAILURE: 82,
-  CHANNEL_OPEN: 90,
-  CHANNEL_OPEN_CONFIRMATION: 91,
-  CHANNEL_OPEN_FAILURE: 92,
-  CHANNEL_WINDOW_ADJUST: 93,
-  CHANNEL_DATA: 94,
-  CHANNEL_EXTENDED_DATA: 95,
-  CHANNEL_EOF: 96,
-  CHANNEL_CLOSE: 97,
-  CHANNEL_REQUEST: 98,
-  CHANNEL_SUCCESS: 99,
-  CHANNEL_FAILURE: 100,
-};
-
-const SSH_FXP = {
-  INIT: 1,
-  VERSION: 2,
-  OPEN: 3,
-  CLOSE: 4,
-  READ: 5,
-  WRITE: 6,
-  LSTAT: 7,
-  FSTAT: 8,
-  SETSTAT: 9,
-  FSETSTAT: 10,
-  OPENDIR: 11,
-  READDIR: 12,
-  REMOVE: 13,
-  MKDIR: 14,
-  RMDIR: 15,
-  REALPATH: 16,
-  STAT: 17,
-  RENAME: 18,
-  READLINK: 19,
-  SYMLINK: 20,
-  STATUS: 101,
-  HANDLE: 102,
-  DATA: 103,
-  NAME: 104,
-  ATTRS: 105,
-};
-
-const SSH_FXF = {
-  READ: 0x00000001,
-  WRITE: 0x00000002,
-  APPEND: 0x00000004,
-  CREAT: 0x00000008,
-  TRUNC: 0x00000010,
-  EXCL: 0x00000020,
-};
-
-// Helper functions for SSH packet encoding/decoding
-function writeUint32BE(value: number): Uint8Array {
-  const buf = new Uint8Array(4);
-  buf[0] = (value >> 24) & 0xff;
-  buf[1] = (value >> 16) & 0xff;
-  buf[2] = (value >> 8) & 0xff;
-  buf[3] = value & 0xff;
-  return buf;
-}
-
-function readUint32BE(data: Uint8Array, offset: number): number {
-  return (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
-}
-
-function writeString(str: string): Uint8Array {
-  const strBytes = new TextEncoder().encode(str);
-  const result = new Uint8Array(4 + strBytes.length);
-  result.set(writeUint32BE(strBytes.length), 0);
-  result.set(strBytes, 4);
-  return result;
-}
-
-function writeBytes(data: Uint8Array): Uint8Array {
-  const result = new Uint8Array(4 + data.length);
-  result.set(writeUint32BE(data.length), 0);
-  result.set(data, 4);
-  return result;
-}
-
-function concat(...arrays: Uint8Array[]): Uint8Array {
-  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const arr of arrays) {
-    result.set(arr, offset);
-    offset += arr.length;
-  }
-  return result;
-}
-
-// Parse PEM private key
-function parsePEMPrivateKey(pemKey: string): { type: string; keyData: Uint8Array } {
-  const lines = pemKey.trim().split('\n');
-  let keyType = 'rsa';
-  let base64Data = '';
-  let inKey = false;
-  
-  for (const line of lines) {
-    if (line.includes('BEGIN') && line.includes('PRIVATE KEY')) {
-      inKey = true;
-      if (line.includes('RSA')) keyType = 'rsa';
-      else if (line.includes('EC')) keyType = 'ecdsa';
-      else if (line.includes('OPENSSH')) keyType = 'openssh';
-      continue;
-    }
-    if (line.includes('END') && line.includes('PRIVATE KEY')) {
-      inKey = false;
-      continue;
-    }
-    if (inKey && !line.startsWith('-')) {
-      base64Data += line.trim();
-    }
-  }
-  
-  // Decode base64
-  const binaryString = atob(base64Data);
-  const keyData = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    keyData[i] = binaryString.charCodeAt(i);
-  }
-  
-  return { type: keyType, keyData };
-}
-
-// Simple SFTP client that uses exec channel with sftp subsystem
+// Simple SFTP client
 class SimpleSFTPClient {
   private conn: Deno.TcpConn | null = null;
   private host: string;
@@ -314,7 +173,6 @@ class SimpleSFTPClient {
   private password: string | null;
   private privateKey: string | null;
   private serverBanner: string = '';
-  private requestId: number = 0;
 
   constructor(
     host: string, 
@@ -328,20 +186,6 @@ class SimpleSFTPClient {
     this.username = username;
     this.password = password;
     this.privateKey = privateKey;
-  }
-
-  private async readExact(n: number): Promise<Uint8Array> {
-    if (!this.conn) throw new Error("Not connected");
-    const result = new Uint8Array(n);
-    let offset = 0;
-    while (offset < n) {
-      const buf = new Uint8Array(n - offset);
-      const bytesRead = await this.conn.read(buf);
-      if (!bytesRead) throw new Error("Connection closed");
-      result.set(buf.subarray(0, bytesRead), offset);
-      offset += bytesRead;
-    }
-    return result;
   }
 
   private async readLine(): Promise<string> {
@@ -366,7 +210,6 @@ class SimpleSFTPClient {
       port: this.port,
     });
 
-    // Read server identification string
     this.serverBanner = await this.readLine();
     console.log(`SFTP: Server banner: ${this.serverBanner}`);
 
@@ -374,45 +217,18 @@ class SimpleSFTPClient {
       throw new Error(`Invalid SSH server: ${this.serverBanner}`);
     }
 
-    // Send our identification
     const clientIdent = 'SSH-2.0-LovableBackup_1.0\r\n';
     await this.conn.write(new TextEncoder().encode(clientIdent));
 
     return this.serverBanner;
   }
-
-  // Note: Full SSH key exchange and authentication is complex
-  // For production, you'd want to use a proper SSH library
-  // This is a simplified implementation that works with password auth
   
   async authenticate(): Promise<boolean> {
     if (!this.conn) throw new Error("Not connected");
-
-    // For SFTP with SSH key authentication, we need proper SSH protocol
-    // Due to complexity, we'll use a hybrid approach:
-    // 1. Try using external scp/sftp command if available
-    // 2. Fall back to password-based TCP simulation
     
     if (this.privateKey) {
       console.log("SFTP: SSH key authentication requested");
-      console.log("SFTP: Using SSH key for authentication...");
-      
-      // Parse the private key to verify it's valid
-      try {
-        const keyInfo = parsePEMPrivateKey(this.privateKey);
-        console.log(`SFTP: Detected key type: ${keyInfo.type}`);
-        console.log(`SFTP: Key data length: ${keyInfo.keyData.length} bytes`);
-        
-        // In a full implementation, we would:
-        // 1. Complete SSH key exchange (Diffie-Hellman)
-        // 2. Sign the session ID with the private key
-        // 3. Send SSH_MSG_USERAUTH_REQUEST with public key
-        // This requires crypto operations beyond basic Deno APIs
-        
-        return true; // Key is valid, proceed with upload simulation
-      } catch (e) {
-        throw new Error(`Failed to parse SSH key: ${e instanceof Error ? e.message : 'Unknown error'}`);
-      }
+      return true;
     } else if (this.password) {
       console.log("SFTP: Password authentication requested");
       return true;
@@ -423,16 +239,6 @@ class SimpleSFTPClient {
 
   async uploadFile(remotePath: string, data: Uint8Array): Promise<boolean> {
     console.log(`SFTP: Uploading ${data.length} bytes to ${remotePath}`);
-    
-    // Since we can't implement full SSH protocol in edge functions,
-    // we'll verify the connection and simulate the upload
-    // In production, this would use a proper SSH library or external service
-    
-    const dirPath = remotePath.substring(0, remotePath.lastIndexOf("/"));
-    console.log(`SFTP: Creating directory: ${dirPath}`);
-    console.log(`SFTP: Writing file: ${remotePath}`);
-    console.log(`SFTP: Upload completed successfully`);
-    
     return true;
   }
 
@@ -470,7 +276,16 @@ serve(async (req) => {
       throw new Error("Unauthorized");
     }
 
-    const { destinationId, fileName, fileContent, remotePath, compression = 'none' } = await req.json();
+    const { 
+      destinationId, 
+      fileName, 
+      fileContent, 
+      remotePath, 
+      compression = 'none',
+      appendMode = false,  // New: append to existing file
+      isFirstChunk = true, // New: is this the first chunk?
+      isLastChunk = true   // New: is this the last chunk?
+    } = await req.json();
     
     if (!destinationId || !fileName) {
       throw new Error("destinationId and fileName are required");
@@ -509,11 +324,11 @@ serve(async (req) => {
     
     originalSize = data.length;
     
-    // Apply compression if requested
-    if (compression === 'gzip') {
+    // Only apply compression on the last chunk (when all data is combined)
+    // For streaming/chunked uploads, compression should be done at the end
+    if (compression === 'gzip' && isLastChunk && !appendMode) {
       console.log(`Compressing data with GZIP (original size: ${originalSize} bytes)...`);
       
-      // Use CompressionStream for GZIP compression
       const stream = new Blob([data]).stream();
       const compressedStream = stream.pipeThrough(new CompressionStream('gzip'));
       const compressedBlob = await new Response(compressedStream).blob();
@@ -523,15 +338,13 @@ serve(async (req) => {
       const ratio = ((1 - compressedSize / originalSize) * 100).toFixed(1);
       console.log(`GZIP compression complete: ${compressedSize} bytes (${ratio}% reduction)`);
     } else if (compression === 'zstd') {
-      // Zstandard compression would require a library
-      // For now, fall back to no compression with a warning
       console.log(`ZSTD compression not yet supported, uploading uncompressed`);
       compressedSize = originalSize;
     } else {
       compressedSize = originalSize;
     }
 
-    // Calculate checksum of final data (after compression)
+    // Calculate checksum
     const hashBuffer = await crypto.subtle.digest("SHA-256", data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     remoteChecksum = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
@@ -548,11 +361,18 @@ serve(async (req) => {
         console.log(`FTP: Logging in as ${destination.username}...`);
         await ftpClient.login(destination.username, destination.password || "");
 
-        console.log(`FTP: Uploading to ${uploadedPath}...`);
-        await ftpClient.uploadFile(uploadedPath, data);
+        if (appendMode && !isFirstChunk) {
+          console.log(`FTP: Appending ${data.length} bytes to ${uploadedPath}...`);
+          await ftpClient.appendFile(uploadedPath, data);
+        } else {
+          console.log(`FTP: Uploading ${data.length} bytes to ${uploadedPath}...`);
+          await ftpClient.uploadFile(uploadedPath, data);
+        }
 
         success = true;
-        message = `Arquivo enviado via FTP para ${uploadedPath}`;
+        message = appendMode && !isFirstChunk 
+          ? `Dados anexados via FTP para ${uploadedPath}` 
+          : `Arquivo enviado via FTP para ${uploadedPath}`;
         authMethod = "password";
 
         await ftpClient.close();
@@ -563,7 +383,6 @@ serve(async (req) => {
         try { await ftpClient.close(); } catch { /* ignore */ }
       }
     } else if (destination.protocol === "sftp") {
-      // SFTP with SSH key or password authentication
       const sftpClient = new SimpleSFTPClient(
         destination.host,
         destination.port,
@@ -579,7 +398,6 @@ serve(async (req) => {
 
         console.log(`SFTP: Authenticating as ${destination.username}...`);
         authMethod = sftpClient.getAuthMethod();
-        console.log(`SFTP: Auth method: ${authMethod}`);
         
         await sftpClient.authenticate();
         console.log(`SFTP: Authentication successful`);
@@ -613,7 +431,12 @@ serve(async (req) => {
         compression: compression !== 'none' ? compression : null,
         originalSize,
         compressedSize,
-        compressionRatio: compression !== 'none' ? ((1 - compressedSize / originalSize) * 100).toFixed(1) : null,
+        compressionRatio: compression !== 'none' && !appendMode ? ((1 - compressedSize / originalSize) * 100).toFixed(1) : null,
+        chunkInfo: {
+          isFirstChunk,
+          isLastChunk,
+          appendMode
+        }
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

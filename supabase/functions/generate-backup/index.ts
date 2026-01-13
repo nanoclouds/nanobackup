@@ -8,8 +8,9 @@ const corsHeaders = {
 };
 
 // Process tables in smaller chunks to avoid CPU timeout
-const TABLES_PER_CHUNK = 15;
-const MAX_ROWS_PER_TABLE = 5000;
+const TABLES_PER_CHUNK = 10;
+const MAX_ROWS_PER_BATCH = 300;
+const BATCH_SIZE_ROWS = 200;
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -36,8 +37,8 @@ serve(async (req) => {
       databaseName, 
       format = 'sql', 
       includeData = true,
-      chunkIndex = 0,  // Which chunk to process (0 = first chunk with header)
-      tableNames       // Optional: specific tables to backup
+      chunkIndex = 0,
+      getMetadataOnly = false  // New: just get table list and chunk count
     } = await req.json();
     
     if (!instanceId) throw new Error("instanceId is required");
@@ -51,8 +52,7 @@ serve(async (req) => {
     if (instanceError || !instance) throw new Error("Instance not found");
 
     const targetDb = databaseName || instance.database;
-    console.log(`Connecting to PostgreSQL: ${instance.host}:${instance.port}/${targetDb} (chunk ${chunkIndex})`);
-
+    
     pgClient = new Client({
       hostname: instance.host,
       port: instance.port,
@@ -64,10 +64,7 @@ serve(async (req) => {
     });
 
     await pgClient.connect();
-    console.log("Connected to PostgreSQL");
-
-    const startTime = Date.now();
-    const sqlParts: string[] = [];
+    console.log(`Connected to ${instance.host}:${instance.port}/${targetDb}`);
 
     // Get all table names
     const tablesResult = await pgClient.queryObject<{ table_name: string }>(`
@@ -79,20 +76,36 @@ serve(async (req) => {
     const allTables = tablesResult.rows.map(t => t.table_name);
     const totalTables = allTables.length;
     const totalChunks = Math.ceil(totalTables / TABLES_PER_CHUNK);
-    
-    // Determine which tables to process in this chunk
-    let tablesToProcess: string[];
-    if (tableNames && Array.isArray(tableNames) && tableNames.length > 0) {
-      // Process specific tables if provided
-      tablesToProcess = tableNames;
-    } else {
-      // Process chunk based on index
-      const startIdx = chunkIndex * TABLES_PER_CHUNK;
-      const endIdx = Math.min(startIdx + TABLES_PER_CHUNK, totalTables);
-      tablesToProcess = allTables.slice(startIdx, endIdx);
+
+    // If just getting metadata, return early
+    if (getMetadataOnly) {
+      await pgClient.end();
+      return new Response(
+        JSON.stringify({
+          success: true,
+          metadata: {
+            totalTables,
+            totalChunks,
+            tablesPerChunk: TABLES_PER_CHUNK,
+            tables: allTables,
+            database: targetDb
+          }
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    console.log(`Processing ${tablesToProcess.length} tables (chunk ${chunkIndex + 1}/${totalChunks})`);
+    console.log(`Processing chunk ${chunkIndex + 1}/${totalChunks} (${TABLES_PER_CHUNK} tables per chunk)`);
+
+    const startTime = Date.now();
+    const sqlParts: string[] = [];
+
+    // Determine which tables to process in this chunk
+    const startIdx = chunkIndex * TABLES_PER_CHUNK;
+    const endIdx = Math.min(startIdx + TABLES_PER_CHUNK, totalTables);
+    const tablesToProcess = allTables.slice(startIdx, endIdx);
+
+    console.log(`Processing ${tablesToProcess.length} tables: ${tablesToProcess.join(', ')}`);
 
     // Add header only on first chunk
     if (chunkIndex === 0) {
@@ -119,105 +132,112 @@ SET session_replication_role = 'replica';
     let totalRows = 0;
 
     for (const tableName of tablesToProcess) {
-      // Get columns
-      const columnsResult = await pgClient.queryObject<{
-        column_name: string;
-        data_type: string;
-        is_nullable: string;
-        column_default: string | null;
-        character_maximum_length: number | null;
-      }>(`
-        SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
-        FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = $1
-        ORDER BY ordinal_position
-      `, [tableName]);
+      try {
+        // Get columns
+        const columnsResult = await pgClient.queryObject<{
+          column_name: string;
+          data_type: string;
+          is_nullable: string;
+          column_default: string | null;
+          character_maximum_length: number | null;
+        }>(`
+          SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
+          FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = $1
+          ORDER BY ordinal_position
+        `, [tableName]);
 
-      const columns = columnsResult.rows;
-      if (columns.length === 0) continue;
+        const columns = columnsResult.rows;
+        if (columns.length === 0) continue;
 
-      // Get primary key
-      const pkResult = await pgClient.queryObject<{ column_name: string }>(`
-        SELECT kcu.column_name FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
-        WHERE tc.table_schema = 'public' AND tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY'
-      `, [tableName]);
+        // Get primary key
+        const pkResult = await pgClient.queryObject<{ column_name: string }>(`
+          SELECT kcu.column_name FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
+          WHERE tc.table_schema = 'public' AND tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY'
+        `, [tableName]);
 
-      // Build CREATE TABLE
-      const columnDefs = columns.map(col => {
-        let typeDef = col.data_type.toUpperCase();
-        if (col.character_maximum_length) typeDef = `${typeDef}(${col.character_maximum_length})`;
-        if (col.is_nullable === 'NO') typeDef += ' NOT NULL';
-        if (col.column_default) typeDef += ` DEFAULT ${col.column_default}`;
-        return `  "${col.column_name}" ${typeDef}`;
-      });
+        // Build CREATE TABLE
+        const columnDefs = columns.map(col => {
+          let typeDef = col.data_type.toUpperCase();
+          if (col.character_maximum_length) typeDef = `${typeDef}(${col.character_maximum_length})`;
+          if (col.is_nullable === 'NO') typeDef += ' NOT NULL';
+          if (col.column_default) typeDef += ` DEFAULT ${col.column_default}`;
+          return `  "${col.column_name}" ${typeDef}`;
+        });
 
-      if (pkResult.rows.length > 0) {
-        const pkCols = pkResult.rows.map(r => `"${r.column_name}"`).join(', ');
-        columnDefs.push(`  PRIMARY KEY (${pkCols})`);
-      }
-
-      sqlParts.push(`-- Table: ${tableName}\nDROP TABLE IF EXISTS public."${tableName}" CASCADE;\n`);
-      sqlParts.push(`CREATE TABLE public."${tableName}" (\n${columnDefs.join(',\n')}\n);\n\n`);
-
-      // Insert data if requested
-      if (includeData) {
-        const countResult = await pgClient.queryObject<{ cnt: number }>(
-          `SELECT COUNT(*)::int as cnt FROM public."${tableName}"`
-        );
-        const rowCount = countResult.rows[0]?.cnt || 0;
-        
-        if (rowCount > 0) {
-          const limit = Math.min(rowCount, MAX_ROWS_PER_TABLE);
-          const columnNames = columns.map(c => `"${c.column_name}"`).join(', ');
-          
-          // Fetch data in smaller batches to avoid memory issues
-          const batchSize = 500;
-          let offset = 0;
-          let tableRows = 0;
-          
-          sqlParts.push(`-- Data for ${tableName} (${Math.min(rowCount, limit)}${rowCount > limit ? ` of ${rowCount}` : ''} rows)\n`);
-          
-          while (offset < limit) {
-            const fetchLimit = Math.min(batchSize, limit - offset);
-            const dataResult = await pgClient.queryObject(
-              `SELECT * FROM public."${tableName}" LIMIT ${fetchLimit} OFFSET ${offset}`
-            );
-            const rows = dataResult.rows as Record<string, unknown>[];
-            
-            if (rows.length === 0) break;
-            
-            // Generate INSERT statements
-            const valuesArray = rows.map(row => {
-              const vals = columns.map(col => escapeSqlValue(row[col.column_name])).join(', ');
-              return `(${vals})`;
-            });
-            
-            sqlParts.push(`INSERT INTO public."${tableName}" (${columnNames}) VALUES\n${valuesArray.join(',\n')};\n`);
-            
-            tableRows += rows.length;
-            offset += fetchLimit;
-          }
-          
-          totalRows += tableRows;
-          sqlParts.push('\n');
+        if (pkResult.rows.length > 0) {
+          const pkCols = pkResult.rows.map(r => `"${r.column_name}"`).join(', ');
+          columnDefs.push(`  PRIMARY KEY (${pkCols})`);
         }
+
+        sqlParts.push(`-- Table: ${tableName}\nDROP TABLE IF EXISTS public."${tableName}" CASCADE;\n`);
+        sqlParts.push(`CREATE TABLE public."${tableName}" (\n${columnDefs.join(',\n')}\n);\n\n`);
+
+        // Insert data if requested
+        if (includeData) {
+          const countResult = await pgClient.queryObject<{ cnt: number }>(
+            `SELECT COUNT(*)::int as cnt FROM public."${tableName}"`
+          );
+          const rowCount = countResult.rows[0]?.cnt || 0;
+          
+          if (rowCount > 0) {
+            const columnNames = columns.map(c => `"${c.column_name}"`).join(', ');
+            
+            // Fetch ALL data, but in batches
+            let offset = 0;
+            let tableRows = 0;
+            
+            sqlParts.push(`-- Data for ${tableName} (${rowCount} rows)\n`);
+            
+            while (offset < rowCount) {
+              const fetchLimit = Math.min(BATCH_SIZE_ROWS, rowCount - offset);
+              const dataResult = await pgClient.queryObject(
+                `SELECT * FROM public."${tableName}" LIMIT ${fetchLimit} OFFSET ${offset}`
+              );
+              const rows = dataResult.rows as Record<string, unknown>[];
+              
+              if (rows.length === 0) break;
+              
+              // Generate INSERT statements in smaller batches
+              for (let i = 0; i < rows.length; i += 50) {
+                const batch = rows.slice(i, i + 50);
+                const valuesArray = batch.map(row => {
+                  const vals = columns.map(col => escapeSqlValue(row[col.column_name])).join(', ');
+                  return `(${vals})`;
+                });
+                sqlParts.push(`INSERT INTO public."${tableName}" (${columnNames}) VALUES\n${valuesArray.join(',\n')};\n`);
+              }
+              
+              tableRows += rows.length;
+              offset += fetchLimit;
+            }
+            
+            totalRows += tableRows;
+            sqlParts.push('\n');
+          }
+        }
+      } catch (tableError) {
+        console.error(`Error processing table ${tableName}:`, tableError);
+        sqlParts.push(`-- Error processing table ${tableName}: ${tableError instanceof Error ? tableError.message : 'Unknown error'}\n\n`);
       }
     }
 
     // Determine if this is the last chunk
-    const isLastChunk = chunkIndex >= totalChunks - 1 || 
-                        (tableNames && tableNames.length > 0);
+    const isLastChunk = chunkIndex >= totalChunks - 1;
 
     // Add footer only on last chunk
-    if (isLastChunk && !tableNames) {
+    if (isLastChunk) {
       sqlParts.push(`
 SET session_replication_role = 'origin';
 
 --
 -- PostgreSQL database dump complete
+-- Chunk ${chunkIndex + 1}/${totalChunks} (final)
 --
 `);
+    } else {
+      sqlParts.push(`-- End of chunk ${chunkIndex + 1}/${totalChunks}\n`);
     }
 
     await pgClient.end();
@@ -226,7 +246,7 @@ SET session_replication_role = 'origin';
     const chunkSize = new TextEncoder().encode(sqlContent).length;
     const duration = Date.now() - startTime;
     
-    console.log(`Chunk ${chunkIndex + 1}/${totalChunks} complete: ${tablesToProcess.length} tables, ${totalRows} rows, ${(chunkSize / 1024).toFixed(2)} KB in ${duration}ms`);
+    console.log(`Chunk ${chunkIndex + 1}/${totalChunks}: ${tablesToProcess.length} tables, ${totalRows} rows, ${(chunkSize / 1024).toFixed(2)} KB in ${duration}ms`);
 
     return new Response(
       JSON.stringify({
@@ -244,8 +264,7 @@ SET session_replication_role = 'origin';
           index: chunkIndex,
           total: totalChunks,
           isLast: isLastChunk,
-          tablesProcessed: tablesToProcess,
-          allTables: chunkIndex === 0 ? allTables : undefined // Only send on first chunk
+          tablesProcessed: tablesToProcess
         }
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
