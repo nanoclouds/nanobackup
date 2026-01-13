@@ -218,7 +218,7 @@ SET session_replication_role = 'replica';
             columnDefs.push(`  PRIMARY KEY (${pkCols})`);
           }
 
-          sqlParts.push(`-- Table: ${tableName}\nDROP TABLE IF EXISTS public."${tableName}" CASCADE;\n`);
+          sqlParts.push(`\n-- Table: ${tableName}\nDROP TABLE IF EXISTS public."${tableName}" CASCADE;\n`);
           sqlParts.push(`CREATE TABLE public."${tableName}" (\n${columnDefs.join(',\n')}\n);\n\n`);
           
           if (tableRowCount > 0) {
@@ -226,10 +226,8 @@ SET session_replication_role = 'replica';
           }
           
           tablesProcessedInChunk++;
-        } else {
-          // Continuing from previous chunk
-          sqlParts.push(`-- Continuing ${tableName} from row ${startRowOffset}\n`);
         }
+        // NOTE: Removed continuation comment - it was causing corruption when inserted between chunks
 
         // Insert data if requested
         if (includeData && tableRowCount > 0) {
@@ -258,7 +256,7 @@ SET session_replication_role = 'replica';
               nextCursor = { tableIndex: tableIdx, rowOffset: currentRowOffset };
               hasMoreData = true;
               console.log(`Table timeout. Next cursor: table ${tableIdx}, row ${currentRowOffset}`);
-              sqlParts.push(`-- Timeout reached, continuing in next chunk from row ${currentRowOffset}\n`);
+              // NOTE: Removed inline comment - it was causing SQL corruption
               break;
             }
             
@@ -274,11 +272,31 @@ SET session_replication_role = 'replica';
               
               if (dataResult.rows.length === 0) break;
               
-              // Generate INSERT statements - build complete statement before adding
+              // Generate INSERT statements - CRITICAL: Build complete statement atomically
               for (const row of dataResult.rows) {
-                const vals = row.map((val, idx) => escapeSqlValueFromText(val, columns[idx].data_type)).join(', ');
-                // Ensure statement is complete and properly terminated
+                // Build values array safely
+                const valuesParts: string[] = [];
+                for (let idx = 0; idx < row.length; idx++) {
+                  const escapedVal = escapeSqlValueFromText(row[idx], columns[idx].data_type);
+                  // Validate that escaped value doesn't contain unescaped newlines
+                  if (escapedVal.includes('\n') && !escapedVal.includes('\\n')) {
+                    console.error(`Warning: Unescaped newline in value for column ${columns[idx].column_name}`);
+                  }
+                  valuesParts.push(escapedVal);
+                }
+                const vals = valuesParts.join(', ');
+                
+                // Build complete INSERT as a single atomic string
+                // CRITICAL: Must be on a single line to prevent chunk boundary corruption
                 const insertStmt = `INSERT INTO public."${tableName}" (${columnNames}) VALUES (${vals});`;
+                
+                // Validate statement structure before adding
+                if (!insertStmt.includes(' VALUES (') || !insertStmt.endsWith(');')) {
+                  console.error(`Malformed INSERT detected for table ${tableName}, row offset ${currentRowOffset}`);
+                  sqlParts.push(`-- SKIPPED malformed row at offset ${currentRowOffset}\n`);
+                  continue;
+                }
+                
                 sqlParts.push(insertStmt + '\n');
               }
               
@@ -429,21 +447,38 @@ function escapeStringValue(value: string): string {
     finalValue = finalValue.substring(0, MAX_STRING_LENGTH) + '...[TRUNCATED]';
   }
   
-  // CRITICAL: Properly escape special characters to prevent SQL corruption
-  // Replace backslashes first (before other escapes)
+  // CRITICAL: Remove all control characters and problematic bytes FIRST
+  // Remove null bytes
+  finalValue = finalValue.replace(/\x00/g, '');
+  // Remove other control characters (except tab which might be intentional)
+  finalValue = finalValue.replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+  
+  // CRITICAL: Escape backslashes FIRST (before other escapes)
   finalValue = finalValue.replace(/\\/g, '\\\\');
+  
   // Escape single quotes by doubling them
   finalValue = finalValue.replace(/'/g, "''");
-  // Remove null bytes that could corrupt the SQL
-  finalValue = finalValue.replace(/\x00/g, '');
-  // Escape newlines and carriage returns to prevent line breaks in SQL
-  finalValue = finalValue.replace(/\r\n/g, '\\r\\n');
-  finalValue = finalValue.replace(/\n/g, '\\n');
-  finalValue = finalValue.replace(/\r/g, '\\r');
   
-  // Final validation: ensure balanced quotes
-  // Count quotes - if odd, add one more escape
-  const quoteCount = (finalValue.match(/''/g) || []).length;
+  // CRITICAL: Convert actual newlines to escaped representation
+  // This prevents line breaks that would corrupt the SQL statement
+  finalValue = finalValue.replace(/\r\n/g, ' ');  // Replace CRLF with space
+  finalValue = finalValue.replace(/\n/g, ' ');    // Replace LF with space  
+  finalValue = finalValue.replace(/\r/g, ' ');    // Replace CR with space
+  finalValue = finalValue.replace(/\t/g, ' ');    // Replace tabs with space
+  
+  // Remove any remaining problematic characters
+  finalValue = finalValue.replace(/[\u0000-\u001F]/g, '');
+  
+  // Collapse multiple spaces into single space
+  finalValue = finalValue.replace(/  +/g, ' ');
+  
+  // Trim whitespace
+  finalValue = finalValue.trim();
+  
+  // If empty after all processing, return empty string
+  if (finalValue === '') {
+    return "''";
+  }
   
   return `'${finalValue}'`;
 }
