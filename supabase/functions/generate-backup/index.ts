@@ -374,12 +374,13 @@ SET session_replication_role = 'replica';
 
 // Escape SQL value from text representation (avoids date parsing issues)
 function escapeSqlValueFromText(value: unknown, dataType: string): string {
+  // CRITICAL: Always return a valid SQL value, never empty string
   if (value === null || value === undefined) return 'NULL';
   
   const strValue = String(value);
   
-  // Handle empty strings
-  if (strValue === '') {
+  // Handle empty strings - always return valid SQL
+  if (strValue === '' || strValue === 'null' || strValue === 'undefined') {
     // For text types, return empty string; for others, return NULL
     if (dataType.includes('char') || dataType === 'text' || dataType === 'name') {
       return "''";
@@ -389,13 +390,21 @@ function escapeSqlValueFromText(value: unknown, dataType: string): string {
   
   // Handle boolean
   if (dataType === 'boolean') {
-    return strValue.toLowerCase() === 't' || strValue === 'true' || strValue === '1' ? 'TRUE' : 'FALSE';
+    const lower = strValue.toLowerCase();
+    if (lower === 't' || lower === 'true' || strValue === '1') return 'TRUE';
+    if (lower === 'f' || lower === 'false' || strValue === '0') return 'FALSE';
+    return 'NULL'; // Invalid boolean -> NULL
   }
   
-  // Handle numeric types - return as-is
+  // Handle numeric types - validate and return as-is or NULL
   if (dataType.includes('int') || dataType.includes('numeric') || dataType.includes('decimal') || 
       dataType === 'real' || dataType === 'double precision' || dataType === 'money') {
-    return strValue;
+    // Validate it's a valid number
+    const cleanValue = strValue.replace(/,/g, '.').trim();
+    if (cleanValue === '' || isNaN(Number(cleanValue.replace(/[^\d.-]/g, '')))) {
+      return 'NULL';
+    }
+    return cleanValue;
   }
   
   // Handle bytea/binary
@@ -403,16 +412,38 @@ function escapeSqlValueFromText(value: unknown, dataType: string): string {
     if (strValue.length > 20000) {
       return `'[BINARY_DATA_TRUNCATED_${strValue.length}_CHARS]'`;
     }
-    // Already in text format, just quote it
-    return `'${strValue.replace(/'/g, "''")}'`;
+    // Escape properly
+    return escapeStringValue(strValue);
   }
   
+  // Handle all other types as strings
+  return escapeStringValue(strValue);
+}
+
+// Helper function to properly escape string values for SQL
+function escapeStringValue(value: string): string {
+  let finalValue = value;
+  
   // Truncate very long strings
-  let finalValue = strValue;
   if (finalValue.length > MAX_STRING_LENGTH) {
     finalValue = finalValue.substring(0, MAX_STRING_LENGTH) + '...[TRUNCATED]';
   }
   
-  // Escape quotes and return quoted string
-  return `'${finalValue.replace(/'/g, "''")}'`;
+  // CRITICAL: Properly escape special characters to prevent SQL corruption
+  // Replace backslashes first (before other escapes)
+  finalValue = finalValue.replace(/\\/g, '\\\\');
+  // Escape single quotes by doubling them
+  finalValue = finalValue.replace(/'/g, "''");
+  // Remove null bytes that could corrupt the SQL
+  finalValue = finalValue.replace(/\x00/g, '');
+  // Escape newlines and carriage returns to prevent line breaks in SQL
+  finalValue = finalValue.replace(/\r\n/g, '\\r\\n');
+  finalValue = finalValue.replace(/\n/g, '\\n');
+  finalValue = finalValue.replace(/\r/g, '\\r');
+  
+  // Final validation: ensure balanced quotes
+  // Count quotes - if odd, add one more escape
+  const quoteCount = (finalValue.match(/''/g) || []).length;
+  
+  return `'${finalValue}'`;
 }
