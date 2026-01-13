@@ -14,6 +14,7 @@ export interface FtpDestination {
   base_directory: string;
   passive_mode: boolean | null;
   status: 'online' | 'offline' | 'unknown' | 'connected' | 'disconnected';
+  write_permission: boolean | null;
   last_tested: string | null;
   created_by: string | null;
   created_at: string;

@@ -288,6 +288,7 @@ export type Database = {
           status: Database["public"]["Enums"]["connection_status"]
           updated_at: string
           username: string
+          write_permission: boolean | null
         }
         Insert: {
           base_directory?: string
@@ -305,6 +306,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["connection_status"]
           updated_at?: string
           username: string
+          write_permission?: boolean | null
         }
         Update: {
           base_directory?: string
@@ -322,6 +324,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["connection_status"]
           updated_at?: string
           username?: string
+          write_permission?: boolean | null
         }
         Relationships: []
       }
