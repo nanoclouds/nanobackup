@@ -9,12 +9,11 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Ultra-conservative limits to avoid CPU timeout
-const TABLES_PER_CHUNK = 2;  // Very few tables per chunk
-const MAX_ROWS_PER_TABLE = 2000; // Maximum rows to fetch per table
-const BATCH_SIZE_ROWS = 25; // Smaller batches
-const MAX_STRING_LENGTH = 20000; // Truncate large strings
-const TABLE_TIMEOUT_MS = 4000; // 4 second limit per table
+// Chunk configuration for processing large databases
+const TABLES_PER_CHUNK = 5;  // Tables per chunk
+const BATCH_SIZE_ROWS = 500; // Rows per batch insert
+const MAX_STRING_LENGTH = 1000000; // 1MB max string length (for very large text fields)
+const TABLE_TIMEOUT_MS = 30000; // 30 second limit per table
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -97,7 +96,6 @@ serve(async (req) => {
             totalTables,
             totalChunks,
             tablesPerChunk: TABLES_PER_CHUNK,
-            maxRowsPerTable: MAX_ROWS_PER_TABLE,
             tables: allTables,
             database: targetDb
           }
@@ -198,19 +196,13 @@ SET session_replication_role = 'replica';
           if (totalRowCount > 0) {
             const columnNames = columns.map(c => `"${c.column_name}"`).join(', ');
             
-            // Limit rows per chunk to avoid timeout
-            const rowsToFetch = Math.min(MAX_ROWS_PER_TABLE, totalRowCount);
+            // Fetch ALL rows - no limits
             let offset = 0;
             let tableRows = 0;
             
-            if (rowsToFetch < totalRowCount) {
-              sqlParts.push(`-- Data for ${tableName} (${rowsToFetch} of ${totalRowCount} rows - limited)\n`);
-              hasMoreData = true;
-            } else {
-              sqlParts.push(`-- Data for ${tableName} (${totalRowCount} rows)\n`);
-            }
+            sqlParts.push(`-- Data for ${tableName} (${totalRowCount} rows)\n`);
             
-            while (offset < rowsToFetch) {
+            while (offset < totalRowCount) {
               // Check timeout
               if (Date.now() - tableStartTime > TABLE_TIMEOUT_MS) {
                 console.log(`Table ${tableName} timeout after ${tableRows} rows`);
@@ -219,7 +211,7 @@ SET session_replication_role = 'replica';
                 break;
               }
               
-              const fetchLimit = Math.min(BATCH_SIZE_ROWS, rowsToFetch - offset);
+              const fetchLimit = Math.min(BATCH_SIZE_ROWS, totalRowCount - offset);
               
               // Use queryArray to get raw values without date parsing
               // Also cast all values to text to avoid type parsing issues
