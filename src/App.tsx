@@ -13,6 +13,7 @@ import Destinations from "./pages/Destinations";
 import Executions from "./pages/Executions";
 import ExecutionDetails from "./pages/ExecutionDetails";
 import Alerts from "./pages/Alerts";
+import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -59,6 +60,11 @@ const App = () => (
             <Route path="/alerts" element={
               <ProtectedRoute>
                 <Alerts />
+              </ProtectedRoute>
+            } />
+            <Route path="/settings" element={
+              <ProtectedRoute>
+                <Settings />
               </ProtectedRoute>
             } />
             <Route path="*" element={<NotFound />} />
