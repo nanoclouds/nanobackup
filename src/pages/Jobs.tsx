@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { StatusBadge } from '@/components/dashboard/StatusBadge';
 import { useJobs, useToggleJob, BackupJob } from '@/hooks/useJobs';
-import { useRunBackup } from '@/hooks/useExecutions';
+import { useRunBackupWithProgress } from '@/hooks/useRunBackupWithProgress';
+import { useBackupProgress } from '@/contexts/BackupProgressContext';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -20,7 +21,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 export default function Jobs() {
   const { data: jobs = [], isLoading } = useJobs();
   const toggleMutation = useToggleJob();
-  const runMutation = useRunBackup();
+  const { setProgress } = useBackupProgress();
+  const runMutation = useRunBackupWithProgress(setProgress);
   const [search, setSearch] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);

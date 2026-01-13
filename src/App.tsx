@@ -4,7 +4,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { BackupProgressProvider } from "@/contexts/BackupProgressContext";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
+import { BackupProgressBar } from "@/components/backup/BackupProgressBar";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
 import Instances from "./pages/Instances";
@@ -21,56 +23,59 @@ const queryClient = new QueryClient();
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <AuthProvider>
-          <Routes>
-            <Route path="/auth" element={<Auth />} />
-            <Route path="/" element={
-              <ProtectedRoute>
-                <Dashboard />
-              </ProtectedRoute>
-            } />
-            <Route path="/instances" element={
-              <ProtectedRoute>
-                <Instances />
-              </ProtectedRoute>
-            } />
-            <Route path="/jobs" element={
-              <ProtectedRoute>
-                <Jobs />
-              </ProtectedRoute>
-            } />
-            <Route path="/destinations" element={
-              <ProtectedRoute>
-                <Destinations />
-              </ProtectedRoute>
-            } />
-            <Route path="/executions" element={
-              <ProtectedRoute>
-                <Executions />
-              </ProtectedRoute>
-            } />
-            <Route path="/executions/:id" element={
-              <ProtectedRoute>
-                <ExecutionDetails />
-              </ProtectedRoute>
-            } />
-            <Route path="/alerts" element={
-              <ProtectedRoute>
-                <Alerts />
-              </ProtectedRoute>
-            } />
-            <Route path="/settings" element={
-              <ProtectedRoute>
-                <Settings />
-              </ProtectedRoute>
-            } />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </AuthProvider>
-      </BrowserRouter>
+      <BackupProgressProvider>
+        <Toaster />
+        <Sonner />
+        <BackupProgressBar />
+        <BrowserRouter>
+          <AuthProvider>
+            <Routes>
+              <Route path="/auth" element={<Auth />} />
+              <Route path="/" element={
+                <ProtectedRoute>
+                  <Dashboard />
+                </ProtectedRoute>
+              } />
+              <Route path="/instances" element={
+                <ProtectedRoute>
+                  <Instances />
+                </ProtectedRoute>
+              } />
+              <Route path="/jobs" element={
+                <ProtectedRoute>
+                  <Jobs />
+                </ProtectedRoute>
+              } />
+              <Route path="/destinations" element={
+                <ProtectedRoute>
+                  <Destinations />
+                </ProtectedRoute>
+              } />
+              <Route path="/executions" element={
+                <ProtectedRoute>
+                  <Executions />
+                </ProtectedRoute>
+              } />
+              <Route path="/executions/:id" element={
+                <ProtectedRoute>
+                  <ExecutionDetails />
+                </ProtectedRoute>
+              } />
+              <Route path="/alerts" element={
+                <ProtectedRoute>
+                  <Alerts />
+                </ProtectedRoute>
+              } />
+              <Route path="/settings" element={
+                <ProtectedRoute>
+                  <Settings />
+                </ProtectedRoute>
+              } />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </AuthProvider>
+        </BrowserRouter>
+      </BackupProgressProvider>
     </TooltipProvider>
   </QueryClientProvider>
 );
