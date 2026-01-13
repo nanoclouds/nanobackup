@@ -1,6 +1,23 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { format } from 'date-fns';
+
+export interface DatabaseBackup {
+  id: string;
+  execution_id: string;
+  database_name: string;
+  status: 'scheduled' | 'running' | 'success' | 'failed' | 'cancelled';
+  file_name: string | null;
+  file_size: number | null;
+  checksum: string | null;
+  started_at: string;
+  completed_at: string | null;
+  duration: number | null;
+  error_message: string | null;
+  logs: string | null;
+  created_at: string;
+}
 
 export interface BackupExecution {
   id: string;
@@ -22,12 +39,15 @@ export interface BackupExecution {
     postgres_instances?: {
       id: string;
       name: string;
+      host: string;
     };
     ftp_destinations?: {
       id: string;
       name: string;
     };
   };
+  // Database backups
+  execution_database_backups?: DatabaseBackup[];
 }
 
 export function useExecutions(jobId?: string) {
@@ -41,9 +61,10 @@ export function useExecutions(jobId?: string) {
           backup_jobs (
             id, 
             name,
-            postgres_instances (id, name),
+            postgres_instances (id, name, host),
             ftp_destinations (id, name)
-          )
+          ),
+          execution_database_backups (*)
         `)
         .order('started_at', { ascending: false })
         .limit(100);
@@ -57,6 +78,32 @@ export function useExecutions(jobId?: string) {
       if (error) throw error;
       return data as BackupExecution[];
     },
+  });
+}
+
+export function useExecutionDetails(executionId: string) {
+  return useQuery({
+    queryKey: ['execution', executionId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('backup_executions')
+        .select(`
+          *,
+          backup_jobs (
+            id, 
+            name,
+            postgres_instances (id, name, host),
+            ftp_destinations (id, name)
+          ),
+          execution_database_backups (*)
+        `)
+        .eq('id', executionId)
+        .maybeSingle();
+      
+      if (error) throw error;
+      return data as BackupExecution | null;
+    },
+    enabled: !!executionId,
   });
 }
 
@@ -133,20 +180,46 @@ export function useUpdateExecution() {
   });
 }
 
+// Generate file name with pattern: database_name_YYYYMMDD_HHmmss.dump
+function generateBackupFileName(databaseName: string, timestamp: Date): string {
+  const dateStr = format(timestamp, 'yyyyMMdd_HHmmss');
+  // Sanitize database name for file system
+  const safeName = databaseName.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `${safeName}_${dateStr}.dump`;
+}
+
+// Simulated databases for demo (in production, this would come from the actual connection test)
+const SIMULATED_DATABASES = [
+  { name: 'postgres', size: '8.5 MB' },
+  { name: 'app_production', size: '156.2 MB' },
+  { name: 'app_analytics', size: '89.4 MB' },
+  { name: 'users_db', size: '45.7 MB' },
+];
+
 export function useRunBackup() {
   const queryClient = useQueryClient();
   
   return useMutation({
     mutationFn: async (jobId: string) => {
+      const startTime = new Date();
+      
       // Create execution record
       const { data: execution, error: execError } = await supabase
         .from('backup_executions')
         .insert({
           job_id: jobId,
           status: 'running',
-          started_at: new Date().toISOString(),
+          started_at: startTime.toISOString(),
+          logs: `[${startTime.toISOString()}] Iniciando backup de todos os bancos da instância...\n`,
         })
-        .select()
+        .select(`
+          *,
+          backup_jobs (
+            id, 
+            name,
+            postgres_instances (id, name, host)
+          )
+        `)
         .single();
       
       if (execError) throw execError;
@@ -156,65 +229,165 @@ export function useRunBackup() {
         .from('backup_jobs')
         .update({ 
           status: 'running',
-          last_run: new Date().toISOString(),
+          last_run: startTime.toISOString(),
         })
         .eq('id', jobId);
 
-      // Simulate backup execution (in production this would call an edge function)
+      // Simulate backup execution for each database
       const simulateBackup = async () => {
-        // Simulate processing time
-        await new Promise(resolve => setTimeout(resolve, 3000 + Math.random() * 5000));
+        const databases = SIMULATED_DATABASES;
+        let allLogs = `[${startTime.toISOString()}] Iniciando backup de todos os bancos da instância...\n`;
+        allLogs += `[${new Date().toISOString()}] Conectando à instância ${execution.backup_jobs?.postgres_instances?.name}...\n`;
+        allLogs += `[${new Date().toISOString()}] ${databases.length} bancos de dados encontrados\n`;
+        allLogs += `[${new Date().toISOString()}] Formato: pg_dump compatível com PostgreSQL 18.1\n\n`;
         
-        const success = Math.random() > 0.2; // 80% success rate
-        const duration = Math.floor(Math.random() * 300) + 60;
-        const fileSize = Math.floor(Math.random() * 500000000) + 10000000;
+        let totalSize = 0;
+        let successCount = 0;
+        let failedCount = 0;
+        const dbBackupIds: string[] = [];
         
-        const updateData: Partial<BackupExecution> = {
-          status: success ? 'success' : 'failed',
-          completed_at: new Date().toISOString(),
-          duration,
-          ...(success ? {
-            file_size: fileSize,
-            file_name: `backup_${new Date().toISOString().replace(/[:.]/g, '-')}.dump`,
-            checksum: `sha256:${Math.random().toString(36).substring(2, 15)}`,
-            logs: `[${new Date().toISOString()}] Backup started\n[${new Date().toISOString()}] Connecting to database...\n[${new Date().toISOString()}] Running pg_dump...\n[${new Date().toISOString()}] Compressing backup...\n[${new Date().toISOString()}] Uploading to destination...\n[${new Date().toISOString()}] Backup completed successfully`,
-          } : {
-            error_message: 'Connection timeout: could not connect to database',
-            logs: `[${new Date().toISOString()}] Backup started\n[${new Date().toISOString()}] Connecting to database...\n[${new Date().toISOString()}] ERROR: Connection timeout after 30s\n[${new Date().toISOString()}] Backup failed`,
-          }),
-        };
+        // Create initial records for all databases
+        for (const db of databases) {
+          const { data: dbBackup, error: dbError } = await supabase
+            .from('execution_database_backups')
+            .insert({
+              execution_id: execution.id,
+              database_name: db.name,
+              status: 'running',
+              started_at: new Date().toISOString(),
+            })
+            .select()
+            .single();
+          
+          if (!dbError && dbBackup) {
+            dbBackupIds.push(dbBackup.id);
+          }
+        }
         
+        // Process each database sequentially with simulated delay
+        for (let i = 0; i < databases.length; i++) {
+          const db = databases[i];
+          const dbStartTime = new Date();
+          const backupId = dbBackupIds[i];
+          
+          allLogs += `[${dbStartTime.toISOString()}] Processando banco: ${db.name}\n`;
+          
+          // Simulate processing time (1-3 seconds per database)
+          await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+          
+          const success = Math.random() > 0.15; // 85% success rate per database
+          const dbEndTime = new Date();
+          const duration = Math.floor((dbEndTime.getTime() - dbStartTime.getTime()) / 1000);
+          const fileSize = Math.floor(Math.random() * 200000000) + 10000000; // 10MB - 210MB
+          const fileName = generateBackupFileName(db.name, dbStartTime);
+          
+          if (success) {
+            successCount++;
+            totalSize += fileSize;
+            
+            const dbLogs = `[${dbStartTime.toISOString()}] pg_dump -Fc -Z 9 --format=custom ${db.name}\n` +
+              `[${new Date().toISOString()}] Comprimindo backup...\n` +
+              `[${dbEndTime.toISOString()}] Enviando para destino: ${fileName}\n` +
+              `[${dbEndTime.toISOString()}] Backup concluído: ${(fileSize / 1024 / 1024).toFixed(2)} MB\n`;
+            
+            allLogs += `[${dbEndTime.toISOString()}] ✓ ${db.name} -> ${fileName} (${(fileSize / 1024 / 1024).toFixed(2)} MB)\n`;
+            
+            await supabase
+              .from('execution_database_backups')
+              .update({
+                status: 'success',
+                file_name: fileName,
+                file_size: fileSize,
+                checksum: `sha256:${Math.random().toString(36).substring(2, 15)}${Math.random().toString(36).substring(2, 15)}`,
+                completed_at: dbEndTime.toISOString(),
+                duration,
+                logs: dbLogs,
+              })
+              .eq('id', backupId);
+          } else {
+            failedCount++;
+            const errorMsg = 'Erro ao executar pg_dump: connection reset by peer';
+            
+            allLogs += `[${dbEndTime.toISOString()}] ✗ ${db.name} - FALHOU: ${errorMsg}\n`;
+            
+            await supabase
+              .from('execution_database_backups')
+              .update({
+                status: 'failed',
+                completed_at: dbEndTime.toISOString(),
+                duration,
+                error_message: errorMsg,
+                logs: `[${dbStartTime.toISOString()}] pg_dump -Fc -Z 9 --format=custom ${db.name}\n[${dbEndTime.toISOString()}] ERROR: ${errorMsg}\n`,
+              })
+              .eq('id', backupId);
+          }
+          
+          // Update main execution logs
+          await supabase
+            .from('backup_executions')
+            .update({ logs: allLogs })
+            .eq('id', execution.id);
+          
+          queryClient.invalidateQueries({ queryKey: ['execution', execution.id] });
+        }
+        
+        const endTime = new Date();
+        const totalDuration = Math.floor((endTime.getTime() - startTime.getTime()) / 1000);
+        
+        // Determine overall status
+        const overallStatus = failedCount === 0 ? 'success' : 
+                             successCount === 0 ? 'failed' : 
+                             'success'; // Partial success counts as success
+        
+        allLogs += `\n[${endTime.toISOString()}] ═══════════════════════════════════════\n`;
+        allLogs += `[${endTime.toISOString()}] Resumo: ${successCount}/${databases.length} bancos processados com sucesso\n`;
+        allLogs += `[${endTime.toISOString()}] Tamanho total: ${(totalSize / 1024 / 1024).toFixed(2)} MB\n`;
+        allLogs += `[${endTime.toISOString()}] Duração total: ${totalDuration}s\n`;
+        allLogs += `[${endTime.toISOString()}] Status: ${overallStatus === 'success' ? 'CONCLUÍDO' : 'FALHOU'}\n`;
+        
+        // Update main execution
         await supabase
           .from('backup_executions')
-          .update(updateData)
+          .update({
+            status: overallStatus,
+            completed_at: endTime.toISOString(),
+            duration: totalDuration,
+            file_size: totalSize,
+            logs: allLogs,
+            error_message: failedCount > 0 ? `${failedCount} banco(s) falharam` : null,
+          })
           .eq('id', execution.id);
         
+        // Update job status
         await supabase
           .from('backup_jobs')
-          .update({ status: success ? 'success' : 'failed' })
+          .update({ status: overallStatus })
           .eq('id', jobId);
         
         // Create alert for failures
-        if (!success) {
+        if (failedCount > 0) {
           await supabase
             .from('alerts')
             .insert({
               job_id: jobId,
               execution_id: execution.id,
               type: 'failure',
-              title: 'Backup falhou',
-              message: 'Connection timeout: could not connect to database',
+              title: `Backup parcial: ${failedCount} banco(s) falharam`,
+              message: `${successCount} de ${databases.length} bancos foram processados com sucesso`,
             });
         }
         
         queryClient.invalidateQueries({ queryKey: ['executions'] });
+        queryClient.invalidateQueries({ queryKey: ['execution', execution.id] });
         queryClient.invalidateQueries({ queryKey: ['jobs'] });
         queryClient.invalidateQueries({ queryKey: ['alerts'] });
         
-        if (success) {
-          toast.success('Backup concluído com sucesso!');
+        if (overallStatus === 'success' && failedCount === 0) {
+          toast.success(`Backup concluído: ${databases.length} bancos processados`);
+        } else if (successCount > 0) {
+          toast.warning(`Backup parcial: ${successCount}/${databases.length} bancos processados`);
         } else {
-          toast.error('Backup falhou');
+          toast.error('Backup falhou para todos os bancos');
         }
       };
       
@@ -226,7 +399,7 @@ export function useRunBackup() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['executions'] });
       queryClient.invalidateQueries({ queryKey: ['jobs'] });
-      toast.info('Backup em execução...');
+      toast.info('Backup em execução para todos os bancos da instância...');
     },
     onError: (error) => {
       toast.error('Erro ao executar backup: ' + error.message);

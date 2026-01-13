@@ -190,6 +190,62 @@ export type Database = {
           },
         ]
       }
+      execution_database_backups: {
+        Row: {
+          checksum: string | null
+          completed_at: string | null
+          created_at: string
+          database_name: string
+          duration: number | null
+          error_message: string | null
+          execution_id: string
+          file_name: string | null
+          file_size: number | null
+          id: string
+          logs: string | null
+          started_at: string
+          status: Database["public"]["Enums"]["job_status"]
+        }
+        Insert: {
+          checksum?: string | null
+          completed_at?: string | null
+          created_at?: string
+          database_name: string
+          duration?: number | null
+          error_message?: string | null
+          execution_id: string
+          file_name?: string | null
+          file_size?: number | null
+          id?: string
+          logs?: string | null
+          started_at?: string
+          status?: Database["public"]["Enums"]["job_status"]
+        }
+        Update: {
+          checksum?: string | null
+          completed_at?: string | null
+          created_at?: string
+          database_name?: string
+          duration?: number | null
+          error_message?: string | null
+          execution_id?: string
+          file_name?: string | null
+          file_size?: number | null
+          id?: string
+          logs?: string | null
+          started_at?: string
+          status?: Database["public"]["Enums"]["job_status"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "execution_database_backups_execution_id_fkey"
+            columns: ["execution_id"]
+            isOneToOne: false
+            referencedRelation: "backup_executions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ftp_destinations: {
         Row: {
           base_directory: string
@@ -293,6 +349,7 @@ export type Database = {
           last_checked: string | null
           name: string
           password: string
+          pg_dump_format: string | null
           port: number
           ssl_enabled: boolean
           status: Database["public"]["Enums"]["connection_status"]
@@ -312,6 +369,7 @@ export type Database = {
           last_checked?: string | null
           name: string
           password: string
+          pg_dump_format?: string | null
           port?: number
           ssl_enabled?: boolean
           status?: Database["public"]["Enums"]["connection_status"]
@@ -331,6 +389,7 @@ export type Database = {
           last_checked?: string | null
           name?: string
           password?: string
+          pg_dump_format?: string | null
           port?: number
           ssl_enabled?: boolean
           status?: Database["public"]["Enums"]["connection_status"]
