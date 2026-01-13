@@ -11,6 +11,7 @@ import Instances from "./pages/Instances";
 import Jobs from "./pages/Jobs";
 import Destinations from "./pages/Destinations";
 import Executions from "./pages/Executions";
+import ExecutionDetails from "./pages/ExecutionDetails";
 import Alerts from "./pages/Alerts";
 import NotFound from "./pages/NotFound";
 
@@ -48,6 +49,11 @@ const App = () => (
             <Route path="/executions" element={
               <ProtectedRoute>
                 <Executions />
+              </ProtectedRoute>
+            } />
+            <Route path="/executions/:id" element={
+              <ProtectedRoute>
+                <ExecutionDetails />
               </ProtectedRoute>
             } />
             <Route path="/alerts" element={
