@@ -18,7 +18,7 @@ export function JobsOverview({ jobs }: JobsOverviewProps) {
   const runBackup = useRunBackup();
 
   const handleRunBackup = (jobId: string) => {
-    runBackup.mutate(jobId);
+    runBackup.mutate({ jobId });
   };
 
   return (
@@ -72,7 +72,7 @@ export function JobsOverview({ jobs }: JobsOverviewProps) {
                     disabled={!job.enabled || job.status === 'running' || runBackup.isPending}
                     onClick={() => handleRunBackup(job.id)}
                   >
-                    {job.status === 'running' || (runBackup.isPending && runBackup.variables === job.id) ? (
+                    {job.status === 'running' || (runBackup.isPending && runBackup.variables?.jobId === job.id) ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <Play className="h-4 w-4" />

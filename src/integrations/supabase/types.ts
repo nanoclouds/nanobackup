@@ -74,6 +74,9 @@ export type Database = {
           id: string
           job_id: string
           logs: string | null
+          next_retry_at: string | null
+          parent_execution_id: string | null
+          retry_count: number
           started_at: string
           status: Database["public"]["Enums"]["job_status"]
         }
@@ -88,6 +91,9 @@ export type Database = {
           id?: string
           job_id: string
           logs?: string | null
+          next_retry_at?: string | null
+          parent_execution_id?: string | null
+          retry_count?: number
           started_at?: string
           status?: Database["public"]["Enums"]["job_status"]
         }
@@ -102,6 +108,9 @@ export type Database = {
           id?: string
           job_id?: string
           logs?: string | null
+          next_retry_at?: string | null
+          parent_execution_id?: string | null
+          retry_count?: number
           started_at?: string
           status?: Database["public"]["Enums"]["job_status"]
         }
@@ -111,6 +120,13 @@ export type Database = {
             columns: ["job_id"]
             isOneToOne: false
             referencedRelation: "backup_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "backup_executions_parent_execution_id_fkey"
+            columns: ["parent_execution_id"]
+            isOneToOne: false
+            referencedRelation: "backup_executions"
             referencedColumns: ["id"]
           },
         ]
@@ -126,10 +142,12 @@ export type Database = {
           id: string
           instance_id: string
           last_run: string | null
+          max_retries: number
           name: string
           next_run: string | null
           retention_count: number | null
           retention_days: number | null
+          retry_delay_minutes: number
           schedule: string
           status: Database["public"]["Enums"]["job_status"]
           timeout: number
@@ -145,10 +163,12 @@ export type Database = {
           id?: string
           instance_id: string
           last_run?: string | null
+          max_retries?: number
           name: string
           next_run?: string | null
           retention_count?: number | null
           retention_days?: number | null
+          retry_delay_minutes?: number
           schedule?: string
           status?: Database["public"]["Enums"]["job_status"]
           timeout?: number
@@ -164,10 +184,12 @@ export type Database = {
           id?: string
           instance_id?: string
           last_run?: string | null
+          max_retries?: number
           name?: string
           next_run?: string | null
           retention_count?: number | null
           retention_days?: number | null
+          retry_delay_minutes?: number
           schedule?: string
           status?: Database["public"]["Enums"]["job_status"]
           timeout?: number

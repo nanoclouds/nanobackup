@@ -48,6 +48,8 @@ const jobSchema = z.object({
   retention_count: z.coerce.number().min(1).max(1000).nullable().optional(),
   retention_days: z.coerce.number().min(1).max(3650).nullable().optional(),
   timeout: z.coerce.number().min(60).max(86400),
+  max_retries: z.coerce.number().min(0).max(10),
+  retry_delay_minutes: z.coerce.number().min(1).max(1440),
 });
 
 type JobFormData = z.infer<typeof jobSchema>;
@@ -78,6 +80,8 @@ export function JobFormDialog({ open, onOpenChange, job }: JobFormDialogProps) {
       retention_count: 7,
       retention_days: null,
       timeout: 3600,
+      max_retries: 3,
+      retry_delay_minutes: 15,
     },
   });
 
@@ -94,6 +98,8 @@ export function JobFormDialog({ open, onOpenChange, job }: JobFormDialogProps) {
         retention_count: job.retention_count,
         retention_days: job.retention_days,
         timeout: job.timeout,
+        max_retries: job.max_retries ?? 3,
+        retry_delay_minutes: job.retry_delay_minutes ?? 15,
       });
     } else {
       form.reset({
@@ -107,6 +113,8 @@ export function JobFormDialog({ open, onOpenChange, job }: JobFormDialogProps) {
         retention_count: 7,
         retention_days: null,
         timeout: 3600,
+        max_retries: 3,
+        retry_delay_minutes: 15,
       });
     }
   }, [job, form, open]);
@@ -334,6 +342,48 @@ export function JobFormDialog({ open, onOpenChange, job }: JobFormDialogProps) {
                 </FormItem>
               )}
             />
+
+            {/* Retry Configuration */}
+            <div className="rounded-lg border p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <h4 className="font-medium text-sm">Re-tentativa Automática</h4>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="max_retries"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Máx. Re-tentativas</FormLabel>
+                      <FormControl>
+                        <Input type="number" min={0} max={10} {...field} />
+                      </FormControl>
+                      <FormDescription>
+                        0 = desativado
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="retry_delay_minutes"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Atraso (minutos)</FormLabel>
+                      <FormControl>
+                        <Input type="number" min={1} max={1440} {...field} />
+                      </FormControl>
+                      <FormDescription>
+                        Tempo entre tentativas
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+            </div>
 
             <FormField
               control={form.control}

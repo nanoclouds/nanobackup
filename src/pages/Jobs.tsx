@@ -80,11 +80,11 @@ export default function Jobs() {
                   <TableCell><Switch checked={job.enabled} onCheckedChange={(enabled) => toggleMutation.mutate({ id: job.id, enabled })} /></TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
-                      <Button variant="ghost" size="icon" disabled={!job.enabled || runMutation.isPending} onClick={() => runMutation.mutate(job.id)} title="Executar agora"><Play className="h-4 w-4" /></Button>
+                      <Button variant="ghost" size="icon" disabled={!job.enabled || runMutation.isPending} onClick={() => runMutation.mutate({ jobId: job.id })} title="Executar agora"><Play className="h-4 w-4" /></Button>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreVertical className="h-4 w-4" /></Button></DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-48">
-                          <DropdownMenuItem onClick={() => runMutation.mutate(job.id)} disabled={!job.enabled}><Play className="mr-2 h-4 w-4" />Executar Agora</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => runMutation.mutate({ jobId: job.id })} disabled={!job.enabled}><Play className="mr-2 h-4 w-4" />Executar Agora</DropdownMenuItem>
                           <DropdownMenuItem onClick={() => { setSelected(job); setFormOpen(true); }}><Edit className="mr-2 h-4 w-4" />Editar</DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => { setSelected(job); setDeleteOpen(true); }}><Trash2 className="mr-2 h-4 w-4" />Excluir</DropdownMenuItem>
