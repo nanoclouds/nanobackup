@@ -237,8 +237,8 @@ export function useRunBackup() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async (params: { jobId: string; parentExecutionId?: string; retryCount?: number }) => {
-      const { jobId, parentExecutionId, retryCount = 0 } = params;
+    mutationFn: async (params: { jobId: string; parentExecutionId?: string; retryCount?: number; selectedDatabases?: string[] }) => {
+      const { jobId, parentExecutionId, retryCount = 0, selectedDatabases } = params;
       const startTime = new Date();
       
       // First, get the job with instance and destination details
@@ -277,9 +277,15 @@ export function useRunBackup() {
       const discoveredDbs: DiscoveredDatabase[] = Array.isArray(rawDbs) 
         ? (rawDbs as unknown as DiscoveredDatabase[])
         : [];
-      const databases: DiscoveredDatabase[] = discoveredDbs.length > 0 
+      
+      // Filter databases if selectedDatabases is provided
+      let databases: DiscoveredDatabase[] = discoveredDbs.length > 0 
         ? discoveredDbs 
         : DEFAULT_DATABASES;
+      
+      if (selectedDatabases && selectedDatabases.length > 0) {
+        databases = databases.filter(db => selectedDatabases.includes(db.name));
+      }
       
       // Create execution record
       const isRetry = retryCount > 0;
