@@ -205,6 +205,7 @@ export type Database = {
           logs: string | null
           started_at: string
           status: Database["public"]["Enums"]["job_status"]
+          storage_path: string | null
         }
         Insert: {
           checksum?: string | null
@@ -220,6 +221,7 @@ export type Database = {
           logs?: string | null
           started_at?: string
           status?: Database["public"]["Enums"]["job_status"]
+          storage_path?: string | null
         }
         Update: {
           checksum?: string | null
@@ -235,6 +237,7 @@ export type Database = {
           logs?: string | null
           started_at?: string
           status?: Database["public"]["Enums"]["job_status"]
+          storage_path?: string | null
         }
         Relationships: [
           {

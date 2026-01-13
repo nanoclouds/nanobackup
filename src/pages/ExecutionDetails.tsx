@@ -8,6 +8,7 @@ import { Separator } from '@/components/ui/separator';
 import { useExecutionDetails, DatabaseBackup } from '@/hooks/useExecutions';
 import { format, formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import { downloadDemoBackup } from '@/lib/backupDownload';
 import { 
   ArrowLeft,
   Calendar,
@@ -25,7 +26,8 @@ import {
   Download,
   RefreshCw,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  FileDown
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -132,6 +134,20 @@ function TimelineEventIcon({ type }: { type: TimelineEvent['type'] }) {
 
 function DatabaseBackupRow({ backup }: { backup: DatabaseBackup }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  
+  const handleDownload = async () => {
+    if (!backup.file_name || backup.status !== 'success') return;
+    
+    setDownloading(true);
+    try {
+      // In production, this would download from storage
+      // For demo, we generate a mock SQL dump file
+      downloadDemoBackup(backup.database_name, backup.file_name);
+    } finally {
+      setDownloading(false);
+    }
+  };
   
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
@@ -153,15 +169,32 @@ function DatabaseBackupRow({ backup }: { backup: DatabaseBackup }) {
           <StatusBadge status={backup.status} size="sm" />
         </TableCell>
         <TableCell>
-          <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="sm">
-              {isOpen ? (
-                <ChevronUp className="h-4 w-4" />
-              ) : (
-                <ChevronDown className="h-4 w-4" />
-              )}
-            </Button>
-          </CollapsibleTrigger>
+          <div className="flex items-center gap-1">
+            {backup.status === 'success' && backup.file_name && (
+              <Button 
+                variant="ghost" 
+                size="sm"
+                onClick={handleDownload}
+                disabled={downloading}
+                title="Baixar backup"
+              >
+                {downloading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <FileDown className="h-4 w-4" />
+                )}
+              </Button>
+            )}
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm">
+                {isOpen ? (
+                  <ChevronUp className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+              </Button>
+            </CollapsibleTrigger>
+          </div>
         </TableCell>
       </TableRow>
       <CollapsibleContent asChild>
@@ -358,13 +391,31 @@ export default function ExecutionDetails() {
           {databaseBackups.length > 0 && (
             <Card className="border-border bg-card">
               <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Database className="h-5 w-5 text-primary" />
-                  Backups por Banco de Dados
-                  <span className="ml-2 text-sm font-normal text-muted-foreground">
-                    (Formato: pg_dump compatível com PostgreSQL 18.1)
-                  </span>
-                </CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Database className="h-5 w-5 text-primary" />
+                    Backups por Banco de Dados
+                    <span className="ml-2 text-sm font-normal text-muted-foreground">
+                      (Formato: pg_dump compatível com PostgreSQL 18.1)
+                    </span>
+                  </CardTitle>
+                  {backupStats.success > 0 && (
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => {
+                        databaseBackups
+                          .filter(b => b.status === 'success' && b.file_name)
+                          .forEach(b => {
+                            downloadDemoBackup(b.database_name, b.file_name!);
+                          });
+                      }}
+                    >
+                      <Download className="mr-2 h-4 w-4" />
+                      Baixar Todos ({backupStats.success})
+                    </Button>
+                  )}
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
