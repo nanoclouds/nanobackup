@@ -83,13 +83,14 @@ serve(async (req) => {
       
       const latency = Date.now() - startTime;
 
-      // Update instance status
+      // Update instance status and store discovered databases
       await supabaseClient
         .from("postgres_instances")
         .update({ 
           status: "online", 
           last_checked: new Date().toISOString(),
-          version: version || instance.version
+          version: version || instance.version,
+          discovered_databases: databases
         })
         .eq("id", instanceId);
 

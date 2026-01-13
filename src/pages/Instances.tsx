@@ -85,7 +85,7 @@ export default function Instances() {
             <TableRow className="border-border hover:bg-transparent">
               <TableHead className="text-muted-foreground">Instância</TableHead>
               <TableHead className="text-muted-foreground">Host</TableHead>
-              <TableHead className="text-muted-foreground">Banco de Dados</TableHead>
+              <TableHead className="text-muted-foreground">Bancos</TableHead>
               <TableHead className="text-muted-foreground">Versão</TableHead>
               <TableHead className="text-muted-foreground">Ambiente</TableHead>
               <TableHead className="text-muted-foreground">Criticidade</TableHead>
@@ -113,7 +113,16 @@ export default function Instances() {
                     </div>
                   </TableCell>
                   <TableCell><code className="rounded bg-secondary px-2 py-1 font-mono text-sm text-foreground">{instance.host}:{instance.port}</code></TableCell>
-                  <TableCell className="font-mono text-sm">{instance.database}</TableCell>
+                  <TableCell>
+                    {instance.discovered_databases && instance.discovered_databases.length > 0 ? (
+                      <Badge variant="secondary" className="gap-1">
+                        <Database className="h-3 w-3" />
+                        {instance.discovered_databases.length} banco{instance.discovered_databases.length > 1 ? 's' : ''}
+                      </Badge>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Testar conexão</span>
+                    )}
+                  </TableCell>
                   <TableCell><span className="text-sm text-muted-foreground">{instance.version || 'Desconhecida'}</span></TableCell>
                   <TableCell><Badge variant="secondary" className="capitalize">{instance.environment === 'production' ? 'Produção' : instance.environment === 'staging' ? 'Homologação' : 'Desenvolvimento'}</Badge></TableCell>
                   <TableCell>{instance.criticality && <Badge variant={criticalityColors[instance.criticality]} className="capitalize">{instance.criticality === 'critical' ? 'Crítico' : instance.criticality === 'high' ? 'Alta' : instance.criticality === 'medium' ? 'Média' : 'Baixa'}</Badge>}</TableCell>

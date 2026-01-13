@@ -188,13 +188,15 @@ function generateBackupFileName(databaseName: string, timestamp: Date): string {
   return `${safeName}_${dateStr}.dump`;
 }
 
-// Simulated databases for demo (in production, this would come from the actual connection test)
-const SIMULATED_DATABASES = [
+// Default databases if none discovered (fallback)
+const DEFAULT_DATABASES = [
   { name: 'postgres', size: '8.5 MB' },
-  { name: 'app_production', size: '156.2 MB' },
-  { name: 'app_analytics', size: '89.4 MB' },
-  { name: 'users_db', size: '45.7 MB' },
 ];
+
+interface DiscoveredDatabase {
+  name: string;
+  size: string;
+}
 
 export function useRunBackup() {
   const queryClient = useQueryClient();
@@ -202,6 +204,33 @@ export function useRunBackup() {
   return useMutation({
     mutationFn: async (jobId: string) => {
       const startTime = new Date();
+      
+      // First, get the job with instance details to fetch discovered databases
+      const { data: job, error: jobError } = await supabase
+        .from('backup_jobs')
+        .select(`
+          id,
+          name,
+          postgres_instances (
+            id, 
+            name, 
+            host,
+            discovered_databases
+          )
+        `)
+        .eq('id', jobId)
+        .single();
+      
+      if (jobError) throw jobError;
+      
+      // Get databases from instance (discovered during connection test)
+      const rawDbs = job.postgres_instances?.discovered_databases;
+      const discoveredDbs: DiscoveredDatabase[] = Array.isArray(rawDbs) 
+        ? (rawDbs as unknown as DiscoveredDatabase[])
+        : [];
+      const databases: DiscoveredDatabase[] = discoveredDbs.length > 0 
+        ? discoveredDbs 
+        : DEFAULT_DATABASES;
       
       // Create execution record
       const { data: execution, error: execError } = await supabase
@@ -233,11 +262,10 @@ export function useRunBackup() {
         })
         .eq('id', jobId);
 
-      // Simulate backup execution for each database
-      const simulateBackup = async () => {
-        const databases = SIMULATED_DATABASES;
+      // Execute backup for each database
+      const executeBackup = async () => {
         let allLogs = `[${startTime.toISOString()}] Iniciando backup de todos os bancos da instância...\n`;
-        allLogs += `[${new Date().toISOString()}] Conectando à instância ${execution.backup_jobs?.postgres_instances?.name}...\n`;
+        allLogs += `[${new Date().toISOString()}] Conectando à instância ${job.postgres_instances?.name} (${job.postgres_instances?.host})...\n`;
         allLogs += `[${new Date().toISOString()}] ${databases.length} bancos de dados encontrados\n`;
         allLogs += `[${new Date().toISOString()}] Formato: pg_dump compatível com PostgreSQL 18.1\n\n`;
         
@@ -392,7 +420,7 @@ export function useRunBackup() {
       };
       
       // Run simulation in background
-      simulateBackup();
+      executeBackup();
       
       return execution;
     },
