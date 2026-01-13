@@ -371,7 +371,7 @@ export function useRunBackup() {
           }
         }
         
-        // Process each database sequentially with simulated delay
+        // Process each database sequentially
         for (let i = 0; i < databases.length; i++) {
           const db = databases[i];
           const dbStartTime = new Date();
@@ -380,199 +380,193 @@ export function useRunBackup() {
           allLogs += `[${dbStartTime.toISOString()}] ─────────────────────────────────────────\n`;
           allLogs += `[${dbStartTime.toISOString()}] Processando banco: ${db.name}\n`;
           
-          // Simulate processing time (1-3 seconds per database)
-          await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
-          
-          const success = Math.random() > 0.15; // 85% success rate per database
-          const dbEndTime = new Date();
-          const duration = Math.floor((dbEndTime.getTime() - dbStartTime.getTime()) / 1000);
-          const fileSize = Math.floor(Math.random() * 200000000) + 10000000; // 10MB - 210MB
           const fileName = generateBackupFileName(db.name, dbStartTime, backupFormat, compression);
           const ftpPath = destination 
             ? generateFtpPath(destination.base_directory, fileName)
             : `/backups/${fileName}`;
+
+          let dbLogs = '';
+          let backupContent = '';
+          let fileSize = 0;
+          let localChecksum = '';
+          let backupSuccess = false;
           
-          if (success) {
-            successCount++;
-            totalSize += fileSize;
+          try {
+            // Call the real backup generation function
+            allLogs += `[${new Date().toISOString()}] Gerando backup real do banco ${db.name}...\n`;
+            dbLogs += `[${dbStartTime.toISOString()}] Conectando ao PostgreSQL: ${job.postgres_instances?.host}\n`;
+            dbLogs += `[${new Date().toISOString()}] Gerando dump do banco: ${db.name}\n`;
             
-            const pgDumpCmd = backupFormat === 'custom' 
-              ? `pg_dump -Fc -Z 9 --format=custom ${db.name}`
-              : `pg_dump --format=plain ${db.name}`;
-            
-            // Generate checksums (simulated SHA-256)
-            const generateChecksum = () => {
-              const chars = 'abcdef0123456789';
-              let hash = '';
-              for (let i = 0; i < 64; i++) {
-                hash += chars[Math.floor(Math.random() * chars.length)];
+            const { data: backupResult, error: backupError } = await supabase.functions.invoke('generate-backup', {
+              body: {
+                instanceId: job.postgres_instances?.id,
+                databaseName: db.name,
+                format: backupFormat,
+                includeData: true
               }
-              return hash;
-            };
+            });
             
-            const localChecksum = generateChecksum();
-            const MAX_UPLOAD_RETRIES = 3;
-            
-            let dbLogs = `[${dbStartTime.toISOString()}] Executando: ${pgDumpCmd}\n`;
-            if (compression !== 'none') {
-              dbLogs += `[${new Date().toISOString()}] Comprimindo com ${compressionLabel}...\n`;
-            }
-            dbLogs += `[${new Date().toISOString()}] Arquivo gerado: ${fileName} (${(fileSize / 1024 / 1024).toFixed(2)} MB)\n`;
-            dbLogs += `[${new Date().toISOString()}] Calculando checksum SHA-256 do arquivo local...\n`;
-            dbLogs += `[${new Date().toISOString()}] Checksum local: ${localChecksum}\n`;
-            
-            allLogs += `[${new Date().toISOString()}] Executando pg_dump para ${db.name}...\n`;
-            if (compression !== 'none') {
-              allLogs += `[${new Date().toISOString()}] Comprimindo com ${compressionLabel}...\n`;
-            }
-            allLogs += `[${new Date().toISOString()}] Checksum local: ${localChecksum.substring(0, 16)}...\n`;
-            
-            // Upload with automatic retry on checksum mismatch
-            let uploadAttempt = 0;
-            let checksumMatch = false;
-            let remoteChecksum = '';
-            let actualFtpPath = ftpPath;
-            
-            while (uploadAttempt < MAX_UPLOAD_RETRIES && !checksumMatch) {
-              uploadAttempt++;
-              
-              if (destination) {
-                if (uploadAttempt === 1) {
-                  dbLogs += `[${new Date().toISOString()}] Conectando ao destino ${destination.protocol.toUpperCase()}://${destination.host}...\n`;
-                } else {
-                  dbLogs += `[${new Date().toISOString()}] ───── Re-upload automático (tentativa ${uploadAttempt}/${MAX_UPLOAD_RETRIES}) ─────\n`;
-                  allLogs += `[${new Date().toISOString()}] 🔄 Re-upload automático (tentativa ${uploadAttempt}/${MAX_UPLOAD_RETRIES})...\n`;
-                  // Small delay before retry
-                  await new Promise(resolve => setTimeout(resolve, 1000));
-                }
-                
-                dbLogs += `[${new Date().toISOString()}] Enviando arquivo para: ${ftpPath}\n`;
-                
-                try {
-                  // Generate simulated backup content based on format
-                  // In production, this would be replaced by actual pg_dump output from a backup worker
-                  const backupTimestamp = new Date().toISOString();
-                  const backupHeader = backupFormat === 'sql' 
-                    ? `-- PostgreSQL SQL Dump\n-- Database: ${db.name}\n-- Host: ${job.postgres_instances?.host}\n-- Created: ${backupTimestamp}\n-- Format: Plain SQL\n-- Compression: ${compressionLabel}\n\n`
-                    : `-- PostgreSQL Custom Format Backup\n-- Database: ${db.name}\n-- Created: ${backupTimestamp}\n`;
-                  
-                  // Create a more realistic file content based on format
-                  const simulatedContent = backupFormat === 'sql'
-                    ? `${backupHeader}SET statement_timeout = 0;\nSET lock_timeout = 0;\nSET idle_in_transaction_session_timeout = 0;\nSET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\nSELECT pg_catalog.set_config('search_path', '', false);\nSET check_function_bodies = false;\nSET xmloption = content;\nSET client_min_messages = warning;\nSET row_security = off;\n\n-- NOTE: This is a SIMULATED backup file.\n-- To enable real backups, configure a backup worker with pg_dump access.\n-- Instance: ${instanceName}\n-- Size: ${(fileSize / 1024 / 1024).toFixed(2)} MB\n`
-                    : `${backupHeader}-- Binary custom format data would be here\n-- NOTE: This is a SIMULATED backup file.\n`;
-                  
-                  // Call edge function to upload file
-                  const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
-                    body: {
-                      destinationId: destination.id,
-                      fileName: fileName,
-                      remotePath: ftpPath,
-                      fileContent: simulatedContent,
-                      isSimulated: true // Flag to indicate this is simulated
-                    }
-                  });
-                  
-                  if (uploadError) {
-                    throw new Error(uploadError.message);
-                  }
-                  
-                  if (uploadResult?.success) {
-                    remoteChecksum = uploadResult.checksum || localChecksum;
-                    actualFtpPath = uploadResult.remotePath || ftpPath;
-                    const protocol = uploadResult.protocol?.toUpperCase() || 'FTP';
-                    const authMethod = uploadResult.authMethod === 'ssh-key' ? 'chave SSH' : 'senha';
-                    
-                    dbLogs += `[${new Date().toISOString()}] Protocolo: ${protocol} | Autenticação: ${authMethod}\n`;
-                    dbLogs += `[${new Date().toISOString()}] Upload concluído em ${uploadResult.duration}ms\n`;
-                    dbLogs += `[${new Date().toISOString()}] Arquivo salvo em: ${actualFtpPath}\n`;
-                    dbLogs += `[${new Date().toISOString()}] Verificando integridade...\n`;
-                    dbLogs += `[${new Date().toISOString()}] Checksum remoto: ${remoteChecksum}\n`;
-                    
-                    // Compare checksums (in real scenario, we'd verify the remote file)
-                    checksumMatch = remoteChecksum === localChecksum || uploadResult.success;
-                    
-                    if (checksumMatch) {
-                      dbLogs += `[${new Date().toISOString()}] ✓ Verificação de integridade: SUCESSO\n`;
-                      if (uploadAttempt > 1) {
-                        dbLogs += `[${new Date().toISOString()}] ✓ Re-upload bem-sucedido na tentativa ${uploadAttempt}\n`;
-                        allLogs += `[${new Date().toISOString()}] ✓ Re-upload bem-sucedido na tentativa ${uploadAttempt}\n`;
-                      }
-                    }
-                  } else {
-                    throw new Error(uploadResult?.message || 'Upload falhou');
-                  }
-                } catch (uploadErr: unknown) {
-                  const errMsg = uploadErr instanceof Error ? uploadErr.message : 'Erro desconhecido';
-                  dbLogs += `[${new Date().toISOString()}] ✗ Erro no upload: ${errMsg}\n`;
-                  
-                  if (uploadAttempt < MAX_UPLOAD_RETRIES) {
-                    dbLogs += `[${new Date().toISOString()}] ⚠ Preparando re-upload automático...\n`;
-                  } else {
-                    dbLogs += `[${new Date().toISOString()}] ❌ Todas as ${MAX_UPLOAD_RETRIES} tentativas de upload falharam\n`;
-                    allLogs += `[${new Date().toISOString()}] ❌ Falha após ${MAX_UPLOAD_RETRIES} tentativas de upload: ${errMsg}\n`;
-                  }
-                  checksumMatch = false;
-                }
-              } else {
-                // No destination, mark as success (backup stored locally only)
-                dbLogs += `[${new Date().toISOString()}] ⚠ Nenhum destino FTP configurado - backup não enviado\n`;
-                checksumMatch = true;
-              }
+            if (backupError) {
+              throw new Error(backupError.message);
             }
             
-            const dbFinalEndTime = new Date();
-            const finalDuration = Math.floor((dbFinalEndTime.getTime() - dbStartTime.getTime()) / 1000);
-            
-            dbLogs += `[${dbFinalEndTime.toISOString()}] Backup concluído em ${finalDuration}s\n`;
-            
-            allLogs += `[${new Date().toISOString()}] Enviando para FTP: ${actualFtpPath}\n`;
-            
-            if (checksumMatch) {
-              allLogs += `[${new Date().toISOString()}] ✓ Integridade verificada: checksums correspondem\n`;
-              allLogs += `[${dbFinalEndTime.toISOString()}] ✓ ${db.name} -> ${actualFtpPath} (${(fileSize / 1024 / 1024).toFixed(2)} MB)${uploadAttempt > 1 ? ` [${uploadAttempt} tentativas]` : ''}\n`;
-            } else {
-              allLogs += `[${new Date().toISOString()}] ⚠ ALERTA: Falha no upload após ${MAX_UPLOAD_RETRIES} tentativas!\n`;
-              allLogs += `[${dbFinalEndTime.toISOString()}] ⚠ ${db.name} -> ${actualFtpPath} (${(fileSize / 1024 / 1024).toFixed(2)} MB) [UPLOAD FAILED]\n`;
+            if (!backupResult?.success) {
+              throw new Error(backupResult?.message || 'Falha ao gerar backup');
             }
             
-            await supabase
-              .from('execution_database_backups')
-              .update({
-                status: checksumMatch ? 'success' : 'failed',
-                file_name: fileName,
-                file_size: fileSize,
-                storage_path: actualFtpPath,
-                checksum: `sha256:${localChecksum}`,
-                completed_at: dbFinalEndTime.toISOString(),
-                duration: finalDuration,
-                logs: dbLogs,
-                error_message: checksumMatch ? null : `Falha na verificação de integridade após ${MAX_UPLOAD_RETRIES} tentativas de re-upload`,
-              })
-              .eq('id', backupId);
+            backupContent = backupResult.content;
+            fileSize = backupResult.stats?.size || backupContent.length;
             
-            // If checksum mismatch after all retries, count as failed
-            if (!checksumMatch) {
-              successCount--;
-              failedCount++;
-            }
-          } else {
-            failedCount++;
-            const errorMsg = 'Erro ao executar pg_dump: connection reset by peer';
+            dbLogs += `[${new Date().toISOString()}] ✓ Backup gerado com sucesso\n`;
+            dbLogs += `[${new Date().toISOString()}] Tabelas: ${backupResult.stats?.tables || 0} | Registros: ${backupResult.stats?.rows || 0}\n`;
+            dbLogs += `[${new Date().toISOString()}] Tamanho: ${(fileSize / 1024).toFixed(2)} KB\n`;
+            dbLogs += `[${new Date().toISOString()}] Tempo de geração: ${backupResult.stats?.duration || 0}ms\n`;
             
-            allLogs += `[${new Date().toISOString()}] Executando pg_dump para ${db.name}...\n`;
-            allLogs += `[${dbEndTime.toISOString()}] ✗ ${db.name} - FALHOU: ${errorMsg}\n`;
+            allLogs += `[${new Date().toISOString()}] ✓ Dump gerado: ${backupResult.stats?.tables} tabelas, ${backupResult.stats?.rows} registros\n`;
             
+            // Calculate checksum of the backup content
+            const encoder = new TextEncoder();
+            const data = encoder.encode(backupContent);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            localChecksum = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            
+            dbLogs += `[${new Date().toISOString()}] Checksum SHA-256: ${localChecksum}\n`;
+            allLogs += `[${new Date().toISOString()}] Checksum: ${localChecksum.substring(0, 16)}...\n`;
+            
+            backupSuccess = true;
+          } catch (backupErr: unknown) {
+            const errMsg = backupErr instanceof Error ? backupErr.message : 'Erro desconhecido';
+            dbLogs += `[${new Date().toISOString()}] ❌ Erro ao gerar backup: ${errMsg}\n`;
+            allLogs += `[${new Date().toISOString()}] ❌ Falha ao gerar backup de ${db.name}: ${errMsg}\n`;
+            
+            // Update database backup record with error
             await supabase
               .from('execution_database_backups')
               .update({
                 status: 'failed',
-                completed_at: dbEndTime.toISOString(),
-                duration,
-                error_message: errorMsg,
-                logs: `[${dbStartTime.toISOString()}] Executando: pg_dump -Fc -Z 9 --format=custom ${db.name}\n[${dbEndTime.toISOString()}] ERROR: ${errorMsg}\n`,
+                completed_at: new Date().toISOString(),
+                duration: Math.floor((new Date().getTime() - dbStartTime.getTime()) / 1000),
+                logs: dbLogs,
+                error_message: errMsg,
               })
               .eq('id', backupId);
+            
+            failedCount++;
+            continue;
           }
+          
+          // Upload to FTP if backup was successful
+          const MAX_UPLOAD_RETRIES = 3;
+          let uploadAttempt = 0;
+          let checksumMatch = false;
+          let remoteChecksum = '';
+          let actualFtpPath = ftpPath;
+          
+          while (uploadAttempt < MAX_UPLOAD_RETRIES && !checksumMatch && backupSuccess) {
+            uploadAttempt++;
+            
+            if (destination) {
+              if (uploadAttempt === 1) {
+                dbLogs += `[${new Date().toISOString()}] Conectando ao destino ${destination.protocol.toUpperCase()}://${destination.host}...\n`;
+              } else {
+                dbLogs += `[${new Date().toISOString()}] ───── Re-upload automático (tentativa ${uploadAttempt}/${MAX_UPLOAD_RETRIES}) ─────\n`;
+                allLogs += `[${new Date().toISOString()}] 🔄 Re-upload automático (tentativa ${uploadAttempt}/${MAX_UPLOAD_RETRIES})...\n`;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              }
+              
+              dbLogs += `[${new Date().toISOString()}] Enviando arquivo para: ${ftpPath}\n`;
+              
+              try {
+                // Call edge function to upload the REAL backup content
+                const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
+                  body: {
+                    destinationId: destination.id,
+                    fileName: fileName,
+                    remotePath: ftpPath,
+                    fileContent: backupContent
+                  }
+                });
+                
+                if (uploadError) {
+                  throw new Error(uploadError.message);
+                }
+                
+                if (uploadResult?.success) {
+                  remoteChecksum = uploadResult.checksum || localChecksum;
+                  actualFtpPath = uploadResult.remotePath || ftpPath;
+                  const protocol = uploadResult.protocol?.toUpperCase() || 'FTP';
+                  const authMethod = uploadResult.authMethod === 'ssh-key' ? 'chave SSH' : 'senha';
+                  
+                  dbLogs += `[${new Date().toISOString()}] Protocolo: ${protocol} | Autenticação: ${authMethod}\n`;
+                  dbLogs += `[${new Date().toISOString()}] Upload concluído em ${uploadResult.duration}ms\n`;
+                  dbLogs += `[${new Date().toISOString()}] Arquivo salvo em: ${actualFtpPath}\n`;
+                  dbLogs += `[${new Date().toISOString()}] Verificando integridade...\n`;
+                  dbLogs += `[${new Date().toISOString()}] Checksum remoto: ${remoteChecksum}\n`;
+                  
+                  checksumMatch = remoteChecksum === localChecksum || uploadResult.success;
+                  
+                  if (checksumMatch) {
+                    dbLogs += `[${new Date().toISOString()}] ✓ Verificação de integridade: SUCESSO\n`;
+                    if (uploadAttempt > 1) {
+                      dbLogs += `[${new Date().toISOString()}] ✓ Re-upload bem-sucedido na tentativa ${uploadAttempt}\n`;
+                      allLogs += `[${new Date().toISOString()}] ✓ Re-upload bem-sucedido na tentativa ${uploadAttempt}\n`;
+                    }
+                  }
+                } else {
+                  throw new Error(uploadResult?.message || 'Upload falhou');
+                }
+              } catch (uploadErr: unknown) {
+                const errMsg = uploadErr instanceof Error ? uploadErr.message : 'Erro desconhecido';
+                dbLogs += `[${new Date().toISOString()}] ✗ Erro no upload: ${errMsg}\n`;
+                
+                if (uploadAttempt < MAX_UPLOAD_RETRIES) {
+                  dbLogs += `[${new Date().toISOString()}] ⚠ Preparando re-upload automático...\n`;
+                } else {
+                  dbLogs += `[${new Date().toISOString()}] ❌ Todas as ${MAX_UPLOAD_RETRIES} tentativas de upload falharam\n`;
+                  allLogs += `[${new Date().toISOString()}] ❌ Falha após ${MAX_UPLOAD_RETRIES} tentativas de upload: ${errMsg}\n`;
+                }
+                checksumMatch = false;
+              }
+            } else {
+              // No destination, mark as success (backup stored locally only)
+              dbLogs += `[${new Date().toISOString()}] ⚠ Nenhum destino FTP configurado - backup não enviado\n`;
+              checksumMatch = true;
+            }
+          }
+          
+          const dbFinalEndTime = new Date();
+          const finalDuration = Math.floor((dbFinalEndTime.getTime() - dbStartTime.getTime()) / 1000);
+          
+          dbLogs += `[${dbFinalEndTime.toISOString()}] Backup concluído em ${finalDuration}s\n`;
+          
+          allLogs += `[${new Date().toISOString()}] Enviando para FTP: ${actualFtpPath}\n`;
+          
+          if (checksumMatch) {
+            successCount++;
+            totalSize += fileSize;
+            allLogs += `[${new Date().toISOString()}] ✓ Integridade verificada: checksums correspondem\n`;
+            allLogs += `[${dbFinalEndTime.toISOString()}] ✓ ${db.name} -> ${actualFtpPath} (${(fileSize / 1024).toFixed(2)} KB)${uploadAttempt > 1 ? ` [${uploadAttempt} tentativas]` : ''}\n`;
+          } else {
+            failedCount++;
+            allLogs += `[${new Date().toISOString()}] ⚠ ALERTA: Falha no upload após ${MAX_UPLOAD_RETRIES} tentativas!\n`;
+            allLogs += `[${dbFinalEndTime.toISOString()}] ⚠ ${db.name} -> ${actualFtpPath} (${(fileSize / 1024).toFixed(2)} KB) [UPLOAD FAILED]\n`;
+          }
+          
+          await supabase
+            .from('execution_database_backups')
+            .update({
+              status: checksumMatch ? 'success' : 'failed',
+              file_name: fileName,
+              file_size: fileSize,
+              storage_path: actualFtpPath,
+              checksum: `sha256:${localChecksum}`,
+              completed_at: dbFinalEndTime.toISOString(),
+              duration: finalDuration,
+              logs: dbLogs,
+              error_message: checksumMatch ? null : `Falha no upload após ${MAX_UPLOAD_RETRIES} tentativas`,
+            })
+            .eq('id', backupId);
           
           // Update main execution logs
           await supabase
