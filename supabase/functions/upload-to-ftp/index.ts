@@ -470,7 +470,7 @@ serve(async (req) => {
       throw new Error("Unauthorized");
     }
 
-    const { destinationId, fileName, fileContent, remotePath } = await req.json();
+    const { destinationId, fileName, fileContent, remotePath, compression = 'none' } = await req.json();
     
     if (!destinationId || !fileName) {
       throw new Error("destinationId and fileName are required");
@@ -493,6 +493,8 @@ serve(async (req) => {
     let remoteChecksum = "";
     let uploadedPath = "";
     let authMethod = "password";
+    let originalSize = 0;
+    let compressedSize = 0;
 
     // Calculate full remote path
     const baseDir = destination.base_directory.endsWith("/") 
@@ -501,11 +503,35 @@ serve(async (req) => {
     uploadedPath = remotePath || `${baseDir}/${fileName}`;
 
     // Generate file data
-    const data = fileContent 
+    let data = fileContent 
       ? new TextEncoder().encode(fileContent)
       : new TextEncoder().encode(`Backup test file created at ${new Date().toISOString()}`);
+    
+    originalSize = data.length;
+    
+    // Apply compression if requested
+    if (compression === 'gzip') {
+      console.log(`Compressing data with GZIP (original size: ${originalSize} bytes)...`);
+      
+      // Use CompressionStream for GZIP compression
+      const stream = new Blob([data]).stream();
+      const compressedStream = stream.pipeThrough(new CompressionStream('gzip'));
+      const compressedBlob = await new Response(compressedStream).blob();
+      data = new Uint8Array(await compressedBlob.arrayBuffer());
+      
+      compressedSize = data.length;
+      const ratio = ((1 - compressedSize / originalSize) * 100).toFixed(1);
+      console.log(`GZIP compression complete: ${compressedSize} bytes (${ratio}% reduction)`);
+    } else if (compression === 'zstd') {
+      // Zstandard compression would require a library
+      // For now, fall back to no compression with a warning
+      console.log(`ZSTD compression not yet supported, uploading uncompressed`);
+      compressedSize = originalSize;
+    } else {
+      compressedSize = originalSize;
+    }
 
-    // Calculate checksum of data
+    // Calculate checksum of final data (after compression)
     const hashBuffer = await crypto.subtle.digest("SHA-256", data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     remoteChecksum = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
@@ -584,6 +610,10 @@ serve(async (req) => {
         checksum: remoteChecksum,
         authMethod,
         protocol: destination.protocol,
+        compression: compression !== 'none' ? compression : null,
+        originalSize,
+        compressedSize,
+        compressionRatio: compression !== 'none' ? ((1 - compressedSize / originalSize) * 100).toFixed(1) : null,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

@@ -478,13 +478,14 @@ export function useRunBackup() {
               dbLogs += `[${new Date().toISOString()}] Enviando arquivo para: ${ftpPath}\n`;
               
               try {
-                // Call edge function to upload the REAL backup content
+                // Call edge function to upload the REAL backup content with compression
                 const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
                   body: {
                     destinationId: destination.id,
                     fileName: fileName,
                     remotePath: ftpPath,
-                    fileContent: backupContent
+                    fileContent: backupContent,
+                    compression: compression // Pass compression setting from job
                   }
                 });
                 
@@ -499,6 +500,17 @@ export function useRunBackup() {
                   const authMethod = uploadResult.authMethod === 'ssh-key' ? 'chave SSH' : 'senha';
                   
                   dbLogs += `[${new Date().toISOString()}] Protocolo: ${protocol} | Autenticação: ${authMethod}\n`;
+                  
+                  // Log compression info if applied
+                  if (uploadResult.compression) {
+                    const originalKB = (uploadResult.originalSize / 1024).toFixed(2);
+                    const compressedKB = (uploadResult.compressedSize / 1024).toFixed(2);
+                    dbLogs += `[${new Date().toISOString()}] Compressão: ${uploadResult.compression.toUpperCase()} (${originalKB} KB → ${compressedKB} KB, ${uploadResult.compressionRatio}% redução)\n`;
+                    allLogs += `[${new Date().toISOString()}] Compressão GZIP: ${uploadResult.compressionRatio}% redução\n`;
+                    // Update file size to compressed size
+                    fileSize = uploadResult.compressedSize;
+                  }
+                  
                   dbLogs += `[${new Date().toISOString()}] Upload concluído em ${uploadResult.duration}ms\n`;
                   dbLogs += `[${new Date().toISOString()}] Arquivo salvo em: ${actualFtpPath}\n`;
                   dbLogs += `[${new Date().toISOString()}] Verificando integridade...\n`;
