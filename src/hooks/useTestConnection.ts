@@ -15,11 +15,25 @@ export interface PostgresTestResult {
   databases?: DatabaseInfo[];
 }
 
-interface TestResult {
+export interface FtpTestResult {
   success: boolean;
   message: string;
   latency?: number;
-  version?: string;
+  protocol?: string;
+  details?: {
+    serverVersion?: string;
+    serverInfo?: string;
+    authMethod?: string;
+    keyType?: string;
+    keyValid?: boolean;
+    keyError?: string;
+    loginSuccess?: boolean;
+    writePermission?: boolean;
+    writeMessage?: string;
+    baseDirectory?: string;
+    note?: string;
+    error?: string;
+  };
 }
 
 export function useTestPostgresConnection() {
@@ -55,20 +69,34 @@ export function useTestFtpConnection() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async (destinationId: string): Promise<TestResult> => {
+    mutationFn: async (destinationId: string): Promise<FtpTestResult> => {
       const { data, error } = await supabase.functions.invoke('test-ftp-connection', {
         body: { destinationId },
       });
       
       if (error) throw error;
-      return data as TestResult;
+      return data as FtpTestResult;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['destinations'] });
       if (data.success) {
-        toast.success(data.message, {
-          description: data.latency ? `Latência: ${data.latency}ms` : undefined,
-        });
+        const details = data.details;
+        let description = data.latency ? `Latência: ${data.latency}ms` : '';
+        
+        if (details?.writePermission !== undefined) {
+          description += details.writePermission 
+            ? ' | ✓ Escrita OK' 
+            : ' | ✗ Sem permissão de escrita';
+        }
+        
+        if (details?.authMethod) {
+          const authLabel = details.authMethod === 'ssh-key' 
+            ? `Chave SSH${details.keyType ? ` (${details.keyType})` : ''}` 
+            : 'Senha';
+          description += ` | Auth: ${authLabel}`;
+        }
+        
+        toast.success(data.message, { description: description || undefined });
       } else {
         toast.error('Falha na conexão', { description: data.message });
       }
