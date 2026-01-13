@@ -217,14 +217,10 @@ function generateBackupFileName(
 // Generate full FTP path
 function generateFtpPath(
   baseDirectory: string,
-  instanceName: string,
-  fileName: string,
-  timestamp: Date
+  fileName: string
 ): string {
-  const dateFolder = format(timestamp, 'yyyy/MM/dd');
-  const sanitizedInstance = instanceName.replace(/[^a-zA-Z0-9_-]/g, '_');
   const basePath = baseDirectory.endsWith('/') ? baseDirectory.slice(0, -1) : baseDirectory;
-  return `${basePath}/${sanitizedInstance}/${dateFolder}/${fileName}`;
+  return `${basePath}/${fileName}`;
 }
 
 // Default databases if none discovered (fallback)
@@ -393,7 +389,7 @@ export function useRunBackup() {
           const fileSize = Math.floor(Math.random() * 200000000) + 10000000; // 10MB - 210MB
           const fileName = generateBackupFileName(db.name, dbStartTime, backupFormat, compression);
           const ftpPath = destination 
-            ? generateFtpPath(destination.base_directory, instanceName, fileName, dbStartTime)
+            ? generateFtpPath(destination.base_directory, fileName)
             : `/backups/${fileName}`;
           
           if (success) {
