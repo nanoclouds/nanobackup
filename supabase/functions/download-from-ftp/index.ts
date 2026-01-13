@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { requireOperatorOrAdmin } from "../_shared/auth.ts";
+import { decrypt } from "../_shared/crypto.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -245,6 +246,10 @@ serve(async (req) => {
       throw new Error("Destination not found");
     }
 
+    // Decrypt credentials if encrypted
+    const decryptedPassword = destination.password ? await decrypt(destination.password) : null;
+    const decryptedSshKey = destination.ssh_key ? await decrypt(destination.ssh_key) : null;
+
     const startTime = Date.now();
     let fileData: Uint8Array;
     let originalSize = 0;
@@ -258,7 +263,7 @@ serve(async (req) => {
         await ftpClient.connect();
         
         console.log(`FTP: Logging in as ${destination.username}...`);
-        await ftpClient.login(destination.username, destination.password || "");
+        await ftpClient.login(destination.username, decryptedPassword || "");
         
         console.log(`FTP: Downloading ${remotePath}...`);
         fileData = await ftpClient.downloadFile(remotePath);
@@ -274,8 +279,8 @@ serve(async (req) => {
         destination.host,
         destination.port,
         destination.username,
-        destination.password,
-        destination.ssh_key
+        decryptedPassword,
+        decryptedSshKey
       );
       
       try {

@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { Client } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 import { requireOperatorOrAdmin } from "../_shared/auth.ts";
+import { decrypt } from "../_shared/crypto.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -59,11 +60,14 @@ serve(async (req) => {
 
     const targetDb = databaseName || instance.database;
     
+    // Decrypt password if encrypted
+    const decryptedPassword = await decrypt(instance.password);
+    
     pgClient = new Client({
       hostname: instance.host,
       port: instance.port,
       user: instance.username,
-      password: instance.password,
+      password: decryptedPassword,
       database: targetDb,
       tls: instance.ssl_enabled ? { enabled: true, enforce: false } : undefined,
       connection: { attempts: 1 },
