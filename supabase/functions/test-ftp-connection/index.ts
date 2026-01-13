@@ -6,6 +6,157 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Simple FTP client for testing
+class TestFTPClient {
+  private conn: Deno.TcpConn | null = null;
+  private host: string;
+  private port: number;
+
+  constructor(host: string, port: number) {
+    this.host = host;
+    this.port = port;
+  }
+
+  private async readResponse(): Promise<string> {
+    if (!this.conn) throw new Error("Not connected");
+    const buffer = new Uint8Array(4096);
+    const bytesRead = await this.conn.read(buffer);
+    if (!bytesRead) return "";
+    return new TextDecoder().decode(buffer.subarray(0, bytesRead)).trim();
+  }
+
+  private async sendCommand(cmd: string): Promise<string> {
+    if (!this.conn) throw new Error("Not connected");
+    await this.conn.write(new TextEncoder().encode(cmd + "\r\n"));
+    return await this.readResponse();
+  }
+
+  async connect(): Promise<string> {
+    this.conn = await Deno.connect({
+      hostname: this.host,
+      port: this.port,
+    });
+    return await this.readResponse();
+  }
+
+  async login(username: string, password: string): Promise<boolean> {
+    const userResponse = await this.sendCommand(`USER ${username}`);
+    if (!userResponse.startsWith("331")) {
+      throw new Error(`Autenticação falhou: ${userResponse}`);
+    }
+    const passResponse = await this.sendCommand(`PASS ${password}`);
+    if (!passResponse.startsWith("230")) {
+      throw new Error(`Senha incorreta: ${passResponse}`);
+    }
+    return true;
+  }
+
+  async setPassiveMode(): Promise<{ host: string; port: number }> {
+    const response = await this.sendCommand("PASV");
+    if (!response.startsWith("227")) {
+      throw new Error(`Modo passivo falhou: ${response}`);
+    }
+    const match = response.match(/\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)/);
+    if (!match) {
+      throw new Error(`Resposta PASV inválida: ${response}`);
+    }
+    const host = `${match[1]}.${match[2]}.${match[3]}.${match[4]}`;
+    const port = parseInt(match[5]) * 256 + parseInt(match[6]);
+    return { host, port };
+  }
+
+  async checkDirectory(path: string): Promise<boolean> {
+    const response = await this.sendCommand(`CWD ${path}`);
+    return response.startsWith("250");
+  }
+
+  async testWritePermission(path: string): Promise<{ canWrite: boolean; message: string }> {
+    // Try to change to the directory first
+    const cwdResponse = await this.sendCommand(`CWD ${path}`);
+    if (!cwdResponse.startsWith("250")) {
+      return { canWrite: false, message: `Diretório não existe ou inacessível: ${path}` };
+    }
+
+    // Try to create a test file
+    const testFileName = `.lovable_write_test_${Date.now()}`;
+    
+    try {
+      await this.sendCommand("TYPE I");
+      const passive = await this.setPassiveMode();
+      
+      const dataConn = await Deno.connect({
+        hostname: passive.host,
+        port: passive.port,
+      });
+
+      const storResponse = await this.sendCommand(`STOR ${testFileName}`);
+      if (!storResponse.startsWith("150") && !storResponse.startsWith("125")) {
+        dataConn.close();
+        return { canWrite: false, message: `Sem permissão de escrita: ${storResponse}` };
+      }
+
+      // Write test data
+      await dataConn.write(new TextEncoder().encode("test"));
+      dataConn.close();
+
+      const completeResponse = await this.readResponse();
+      if (!completeResponse.startsWith("226")) {
+        return { canWrite: false, message: `Falha ao escrever arquivo: ${completeResponse}` };
+      }
+
+      // Delete the test file
+      const deleteResponse = await this.sendCommand(`DELE ${testFileName}`);
+      if (!deleteResponse.startsWith("250")) {
+        return { canWrite: true, message: `Escrita OK, mas falha ao limpar arquivo de teste` };
+      }
+
+      return { canWrite: true, message: `Permissões de escrita verificadas em ${path}` };
+    } catch (e) {
+      return { canWrite: false, message: `Erro ao testar escrita: ${e instanceof Error ? e.message : 'Erro desconhecido'}` };
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.conn) {
+      try {
+        await this.sendCommand("QUIT");
+      } catch {
+        // Ignore
+      }
+      this.conn.close();
+      this.conn = null;
+    }
+  }
+}
+
+// Parse PEM private key to verify format
+function validateSSHKey(pemKey: string): { valid: boolean; type: string; error?: string } {
+  const lines = pemKey.trim().split('\n');
+  let keyType = 'unknown';
+  let hasBegin = false;
+  let hasEnd = false;
+  
+  for (const line of lines) {
+    if (line.includes('BEGIN') && line.includes('PRIVATE KEY')) {
+      hasBegin = true;
+      if (line.includes('RSA')) keyType = 'RSA';
+      else if (line.includes('EC')) keyType = 'ECDSA';
+      else if (line.includes('OPENSSH')) keyType = 'OpenSSH';
+      else if (line.includes('DSA')) keyType = 'DSA';
+      else keyType = 'PEM';
+    }
+    if (line.includes('END') && line.includes('PRIVATE KEY')) {
+      hasEnd = true;
+    }
+  }
+  
+  if (!hasBegin || !hasEnd) {
+    return { valid: false, type: keyType, error: 'Formato de chave inválido. Deve conter BEGIN e END PRIVATE KEY.' };
+  }
+  
+  return { valid: true, type: keyType };
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -47,12 +198,13 @@ serve(async (req) => {
     const startTime = Date.now();
     let success = false;
     let message = "";
+    let details: Record<string, unknown> = {};
 
-    // For SFTP connections, we'll use a different approach
+    // For SFTP connections
     if (destination.protocol === "sftp") {
-      // Since Deno doesn't have a built-in SSH/SFTP client, we'll simulate
-      // a connection test using TCP socket check
       try {
+        console.log(`SFTP: Connecting to ${destination.host}:${destination.port}...`);
+        
         const conn = await Deno.connect({
           hostname: destination.host,
           port: destination.port,
@@ -64,49 +216,114 @@ serve(async (req) => {
         
         if (bytesRead && bytesRead > 0) {
           const banner = new TextDecoder().decode(buffer.subarray(0, bytesRead));
+          
           if (banner.startsWith("SSH-")) {
-            success = true;
-            message = `Servidor SSH/SFTP respondendo: ${banner.split('\n')[0]}`;
+            const serverVersion = banner.split('\n')[0].trim();
+            console.log(`SFTP: Server version: ${serverVersion}`);
+            
+            // Determine auth method
+            const authMethod = destination.ssh_key ? 'ssh-key' : 'password';
+            
+            // Validate SSH key if provided
+            if (destination.ssh_key) {
+              const keyValidation = validateSSHKey(destination.ssh_key);
+              if (!keyValidation.valid) {
+                conn.close();
+                message = `Chave SSH inválida: ${keyValidation.error}`;
+                details = { 
+                  serverVersion,
+                  authMethod: 'ssh-key',
+                  keyValid: false,
+                  keyError: keyValidation.error
+                };
+              } else {
+                console.log(`SFTP: SSH key validated (${keyValidation.type})`);
+                
+                // For SFTP, we can't do a full connection test without a proper SSH library
+                // But we can verify the server is responding and the key format is valid
+                success = true;
+                message = `Servidor SFTP online. Autenticação: Chave SSH (${keyValidation.type})`;
+                details = {
+                  serverVersion,
+                  authMethod: 'ssh-key',
+                  keyType: keyValidation.type,
+                  keyValid: true,
+                  baseDirectory: destination.base_directory,
+                  note: 'Verificação de escrita requer conexão SSH completa'
+                };
+              }
+            } else if (destination.password) {
+              // Password auth - just verify server is responding
+              success = true;
+              message = `Servidor SFTP online. Autenticação: Senha`;
+              details = {
+                serverVersion,
+                authMethod: 'password',
+                baseDirectory: destination.base_directory,
+                note: 'Verificação de escrita requer conexão SSH completa'
+              };
+            } else {
+              message = "Nenhum método de autenticação configurado (senha ou chave SSH)";
+              details = { serverVersion, authMethod: 'none' };
+            }
+            
+            conn.close();
           } else {
+            conn.close();
             message = "Servidor não respondeu com protocolo SSH válido";
+            details = { response: banner.substring(0, 100) };
           }
         } else {
+          conn.close();
           message = "Servidor não respondeu";
         }
-        
-        conn.close();
       } catch (e: unknown) {
         const errorMessage = e instanceof Error ? e.message : "Erro desconhecido";
         message = `Falha ao conectar: ${errorMessage}`;
+        details = { error: errorMessage };
       }
     } else {
-      // FTP/FTPS - check TCP connectivity and FTP banner
+      // FTP/FTPS - full connection test with write permission check
+      const ftpClient = new TestFTPClient(destination.host, destination.port);
+      
       try {
-        const conn = await Deno.connect({
-          hostname: destination.host,
-          port: destination.port,
-        });
+        console.log(`FTP: Connecting to ${destination.host}:${destination.port}...`);
+        const banner = await ftpClient.connect();
         
-        // Read FTP welcome message
-        const buffer = new Uint8Array(1024);
-        const bytesRead = await conn.read(buffer);
-        
-        if (bytesRead && bytesRead > 0) {
-          const response = new TextDecoder().decode(buffer.subarray(0, bytesRead));
-          if (response.startsWith("220")) {
-            success = true;
-            message = `Servidor FTP respondendo: ${response.split('\n')[0].substring(4)}`;
-          } else {
-            message = `Resposta inesperada do servidor: ${response.split('\n')[0]}`;
-          }
-        } else {
-          message = "Servidor não respondeu";
+        if (!banner.startsWith("220")) {
+          throw new Error(`Resposta inesperada: ${banner}`);
         }
         
-        conn.close();
+        const serverInfo = banner.substring(4).split('\n')[0];
+        console.log(`FTP: Server: ${serverInfo}`);
+        details.serverInfo = serverInfo;
+
+        // Login
+        console.log(`FTP: Logging in as ${destination.username}...`);
+        await ftpClient.login(destination.username, destination.password || "");
+        console.log(`FTP: Login successful`);
+        details.loginSuccess = true;
+
+        // Test write permission
+        console.log(`FTP: Testing write permission on ${destination.base_directory}...`);
+        const writeTest = await ftpClient.testWritePermission(destination.base_directory);
+        details.writePermission = writeTest.canWrite;
+        details.writeMessage = writeTest.message;
+
+        if (writeTest.canWrite) {
+          success = true;
+          message = `Conexão FTP OK. ${writeTest.message}`;
+        } else {
+          success = false;
+          message = `Conexão FTP OK, mas: ${writeTest.message}`;
+        }
+
+        await ftpClient.close();
       } catch (e: unknown) {
         const errorMessage = e instanceof Error ? e.message : "Erro desconhecido";
-        message = `Falha ao conectar: ${errorMessage}`;
+        message = `Falha: ${errorMessage}`;
+        details.error = errorMessage;
+        try { await ftpClient.close(); } catch { /* ignore */ }
       }
     }
 
@@ -122,7 +339,13 @@ serve(async (req) => {
       .eq("id", destinationId);
 
     return new Response(
-      JSON.stringify({ success, message, latency }),
+      JSON.stringify({ 
+        success, 
+        message, 
+        latency,
+        protocol: destination.protocol,
+        details 
+      }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error: unknown) {
