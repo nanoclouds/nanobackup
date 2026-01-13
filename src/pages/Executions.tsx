@@ -1,21 +1,22 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { StatusBadge } from '@/components/dashboard/StatusBadge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { formatDistanceToNow, format } from 'date-fns';
+import { formatDistanceToNow, format, startOfDay, endOfDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { useExecutions } from '@/hooks/useExecutions';
+import { useExecutions, BackupExecution } from '@/hooks/useExecutions';
+import { ExecutionFiltersPanel, ExecutionFilters } from '@/components/executions/ExecutionFiltersPanel';
 import { 
   Search, 
   Calendar,
   Clock,
   HardDrive,
   RefreshCw,
-  Filter,
   Eye,
-  Loader2
+  Loader2,
+  FileWarning
 } from 'lucide-react';
 import {
   Table,
@@ -53,16 +54,57 @@ export default function Executions() {
   const navigate = useNavigate();
   const { data: executions, isLoading, refetch } = useExecutions();
   const [searchQuery, setSearchQuery] = useState('');
-
-  const filteredExecutions = executions?.filter(execution => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      execution.backup_jobs?.name?.toLowerCase().includes(query) ||
-      execution.backup_jobs?.postgres_instances?.name?.toLowerCase().includes(query) ||
-      execution.status.toLowerCase().includes(query)
-    );
+  const [filters, setFilters] = useState<ExecutionFilters>({
+    status: null,
+    instanceId: null,
+    dateFrom: null,
+    dateTo: null,
   });
+
+  const filteredExecutions = useMemo(() => {
+    if (!executions) return [];
+
+    return executions.filter((execution: BackupExecution) => {
+      // Search query filter
+      if (searchQuery) {
+        const query = searchQuery.toLowerCase();
+        const matchesSearch = (
+          execution.backup_jobs?.name?.toLowerCase().includes(query) ||
+          execution.backup_jobs?.postgres_instances?.name?.toLowerCase().includes(query) ||
+          execution.status.toLowerCase().includes(query)
+        );
+        if (!matchesSearch) return false;
+      }
+
+      // Status filter
+      if (filters.status && execution.status !== filters.status) {
+        return false;
+      }
+
+      // Instance filter
+      if (filters.instanceId && execution.backup_jobs?.postgres_instances?.id !== filters.instanceId) {
+        return false;
+      }
+
+      // Date from filter
+      if (filters.dateFrom) {
+        const executionDate = new Date(execution.started_at);
+        const fromDate = startOfDay(filters.dateFrom);
+        if (executionDate < fromDate) return false;
+      }
+
+      // Date to filter
+      if (filters.dateTo) {
+        const executionDate = new Date(execution.started_at);
+        const toDate = endOfDay(filters.dateTo);
+        if (executionDate > toDate) return false;
+      }
+
+      return true;
+    });
+  }, [executions, searchQuery, filters]);
+
+  const hasActiveFilters = filters.status || filters.instanceId || filters.dateFrom || filters.dateTo || searchQuery;
 
   return (
     <MainLayout 
@@ -70,27 +112,35 @@ export default function Executions() {
       subtitle="Acompanhe todas as execuções de backup"
     >
       {/* Actions Bar */}
-      <div className="mb-6 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="relative w-80">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Buscar execuções..."
-              className="bg-secondary pl-9"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
+      <div className="mb-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="relative w-80">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Buscar por job, instância..."
+                className="bg-secondary pl-9"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
           </div>
-          <Button variant="outline">
-            <Filter className="mr-2 h-4 w-4" />
-            Filtros
+          <Button variant="outline" onClick={() => refetch()}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Atualizar
           </Button>
         </div>
-        <Button variant="outline" onClick={() => refetch()}>
-          <RefreshCw className="mr-2 h-4 w-4" />
-          Atualizar
-        </Button>
+
+        {/* Filters Row */}
+        <ExecutionFiltersPanel filters={filters} onFiltersChange={setFilters} />
       </div>
+
+      {/* Results Summary */}
+      {hasActiveFilters && !isLoading && (
+        <div className="mb-4 text-sm text-muted-foreground">
+          {filteredExecutions.length} {filteredExecutions.length === 1 ? 'resultado encontrado' : 'resultados encontrados'}
+        </div>
+      )}
 
       {/* Table */}
       <div className="rounded-lg border border-border bg-card">
@@ -111,14 +161,22 @@ export default function Executions() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredExecutions?.length === 0 ? (
+              {filteredExecutions.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
-                    Nenhuma execução encontrada.
+                  <TableCell colSpan={6} className="py-16">
+                    <div className="flex flex-col items-center justify-center text-center">
+                      <FileWarning className="h-10 w-10 text-muted-foreground mb-3" />
+                      <p className="font-medium text-foreground">Nenhuma execução encontrada</p>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        {hasActiveFilters 
+                          ? 'Tente ajustar os filtros para ver mais resultados.'
+                          : 'Ainda não há execuções de backup registradas.'}
+                      </p>
+                    </div>
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredExecutions?.map((execution) => (
+                filteredExecutions.map((execution) => (
                   <TableRow 
                     key={execution.id} 
                     className="border-border table-row-hover cursor-pointer"
