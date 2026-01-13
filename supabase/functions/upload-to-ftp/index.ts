@@ -59,7 +59,19 @@ class SimpleFTPClient {
   }
 
   async setPassiveMode(): Promise<{ host: string; port: number }> {
-    const response = await this.sendCommand("PASV");
+    // Try EPSV first (Extended Passive Mode) - more reliable for cloud environments
+    let response = await this.sendCommand("EPSV");
+    if (response.startsWith("229")) {
+      // EPSV response format: 229 Entering Extended Passive Mode (|||port|)
+      const match = response.match(/\(\|\|\|(\d+)\|\)/);
+      if (match) {
+        console.log(`FTP: Using EPSV mode, port ${match[1]}`);
+        return { host: this.host, port: parseInt(match[1]) };
+      }
+    }
+    
+    // Fallback to PASV
+    response = await this.sendCommand("PASV");
     if (!response.startsWith("227")) {
       throw new Error(`PASV failed: ${response}`);
     }
@@ -67,9 +79,10 @@ class SimpleFTPClient {
     if (!match) {
       throw new Error(`Invalid PASV response: ${response}`);
     }
-    const host = `${match[1]}.${match[2]}.${match[3]}.${match[4]}`;
+    // Use the server's host instead of PASV-reported IP (works better in NAT environments)
     const port = parseInt(match[5]) * 256 + parseInt(match[6]);
-    return { host, port };
+    console.log(`FTP: Using PASV mode, port ${port}`);
+    return { host: this.host, port };
   }
 
   async mkdirRecursive(path: string): Promise<void> {
@@ -84,31 +97,48 @@ class SimpleFTPClient {
   async uploadFile(remotePath: string, data: Uint8Array): Promise<boolean> {
     const dirPath = remotePath.substring(0, remotePath.lastIndexOf("/"));
     if (dirPath) {
+      console.log(`FTP: Creating directory structure: ${dirPath}`);
       await this.mkdirRecursive(dirPath);
+      console.log(`FTP: Directory created or exists`);
     }
 
+    console.log(`FTP: Setting binary mode...`);
     await this.setBinaryMode();
-    const passive = await this.setPassiveMode();
     
+    console.log(`FTP: Entering passive mode...`);
+    const passive = await this.setPassiveMode();
+    console.log(`FTP: Passive mode active - ${passive.host}:${passive.port}`);
+    
+    console.log(`FTP: Connecting to data channel...`);
     const dataConn = await Deno.connect({
       hostname: passive.host,
       port: passive.port,
     });
+    console.log(`FTP: Data channel connected`);
 
+    console.log(`FTP: Sending STOR command for ${remotePath}...`);
     const storResponse = await this.sendCommand(`STOR ${remotePath}`);
+    console.log(`FTP: STOR response: ${storResponse}`);
+    
     if (!storResponse.startsWith("150") && !storResponse.startsWith("125")) {
       dataConn.close();
       throw new Error(`STOR failed: ${storResponse}`);
     }
 
+    console.log(`FTP: Writing ${data.length} bytes to data channel...`);
     await dataConn.write(data);
+    console.log(`FTP: Data written, closing data channel...`);
     dataConn.close();
 
+    console.log(`FTP: Waiting for transfer complete response...`);
     const completeResponse = await this.readResponse();
+    console.log(`FTP: Transfer response: ${completeResponse}`);
+    
     if (!completeResponse.startsWith("226")) {
       throw new Error(`Transfer failed: ${completeResponse}`);
     }
 
+    console.log(`FTP: Upload successful!`);
     return true;
   }
 
