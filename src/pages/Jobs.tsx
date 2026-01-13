@@ -21,8 +21,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 export default function Jobs() {
   const { data: jobs = [], isLoading } = useJobs();
   const toggleMutation = useToggleJob();
-  const { setProgress } = useBackupProgress();
-  const runMutation = useRunBackupWithProgress(setProgress);
+  const { setProgress, checkCancelled, resetCancellation } = useBackupProgress();
+  const runMutation = useRunBackupWithProgress(setProgress, checkCancelled);
   const [search, setSearch] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -33,6 +33,8 @@ export default function Jobs() {
 
   const handleRunJob = (selectedDatabases: string[]) => {
     if (selected) {
+      // Reset cancellation state before starting new backup
+      resetCancellation();
       runMutation.mutate({ jobId: selected.id, selectedDatabases });
       setRunOpen(false);
     }

@@ -47,8 +47,12 @@ interface RunBackupParams {
 }
 
 type ProgressCallback = (progress: BackupProgress | null) => void;
+type CancelCheckCallback = () => boolean;
 
-export function useRunBackupWithProgress(onProgress: ProgressCallback) {
+export function useRunBackupWithProgress(
+  onProgress: ProgressCallback,
+  checkCancelled?: CancelCheckCallback
+) {
   const queryClient = useQueryClient();
   
   return useMutation({
@@ -118,6 +122,7 @@ export function useRunBackupWithProgress(onProgress: ProgressCallback) {
         let totalSize = 0;
         let successCount = 0;
         let failedCount = 0;
+        let wasCancelled = false;
         const dbBackupIds: string[] = [];
         
         // Create initial records
@@ -138,6 +143,40 @@ export function useRunBackupWithProgress(onProgress: ProgressCallback) {
         
         // Process each database
         for (let i = 0; i < databases.length; i++) {
+          // Check for cancellation
+          if (checkCancelled && checkCancelled()) {
+            wasCancelled = true;
+            allLogs += `\n[${new Date().toISOString()}] ⚠️ Backup cancelado pelo usuário\n`;
+            
+            // Mark remaining databases as cancelled
+            for (let j = i; j < databases.length; j++) {
+              const backupId = dbBackupIds[j];
+              await supabase
+                .from('execution_database_backups')
+                .update({
+                  status: 'cancelled',
+                  completed_at: new Date().toISOString(),
+                  error_message: 'Cancelado pelo usuário',
+                })
+                .eq('id', backupId);
+            }
+            
+            onProgress({
+              executionId: execution.id,
+              jobName: job.name,
+              databaseName: databases[i].name,
+              currentChunk: 0,
+              totalChunks: 0,
+              currentDatabase: i + 1,
+              totalDatabases: databases.length,
+              phase: 'cancelled',
+              message: 'Backup cancelado pelo usuário',
+              startedAt: startTime,
+            });
+            
+            break;
+          }
+          
           const db = databases[i];
           const dbStartTime = new Date();
           const backupId = dbBackupIds[i];
@@ -166,6 +205,11 @@ export function useRunBackupWithProgress(onProgress: ProgressCallback) {
               startedAt: startTime,
             });
             
+            // Check for cancellation before metadata
+            if (checkCancelled && checkCancelled()) {
+              throw new Error('Cancelado pelo usuário');
+            }
+            
             // Get metadata
             const { data: metadata, error: metaError } = await supabase.functions.invoke('generate-backup', {
               body: {
@@ -190,6 +234,11 @@ export function useRunBackupWithProgress(onProgress: ProgressCallback) {
             
             // Process each chunk
             for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+              // Check for cancellation before each chunk
+              if (checkCancelled && checkCancelled()) {
+                throw new Error('Cancelado pelo usuário');
+              }
+              
               const isFirstChunk = chunkIdx === 0;
               const isLastChunk = chunkIdx === totalChunks - 1;
               
@@ -227,6 +276,11 @@ export function useRunBackupWithProgress(onProgress: ProgressCallback) {
               
               totalTablesProcessed += chunkResult.stats?.tables || 0;
               totalRowsProcessed += chunkResult.stats?.rows || 0;
+              
+              // Check for cancellation before upload
+              if (checkCancelled && checkCancelled()) {
+                throw new Error('Cancelado pelo usuário');
+              }
               
               // Update progress: uploading phase
               onProgress({
@@ -268,6 +322,11 @@ export function useRunBackupWithProgress(onProgress: ProgressCallback) {
             }
             
             fileSize = totalBytesUploaded;
+            
+            // Check for cancellation before compression
+            if (checkCancelled && checkCancelled()) {
+              throw new Error('Cancelado pelo usuário');
+            }
             
             // Compress if needed
             if (compression !== 'none' && destination) {
@@ -336,19 +395,52 @@ export function useRunBackupWithProgress(onProgress: ProgressCallback) {
             
           } catch (err: unknown) {
             const errMsg = err instanceof Error ? err.message : 'Erro desconhecido';
-            dbLogs += `[${new Date().toISOString()}] ❌ Erro: ${errMsg}\n`;
-            allLogs += `[${new Date().toISOString()}] ❌ ${db.name}: ${errMsg}\n`;
+            const isCancelError = errMsg.includes('Cancelado pelo usuário');
+            
+            dbLogs += `[${new Date().toISOString()}] ${isCancelError ? '⚠️' : '❌'} ${isCancelError ? 'Cancelado' : 'Erro'}: ${errMsg}\n`;
+            allLogs += `[${new Date().toISOString()}] ${isCancelError ? '⚠️' : '❌'} ${db.name}: ${errMsg}\n`;
             
             await supabase
               .from('execution_database_backups')
               .update({
-                status: 'failed',
+                status: isCancelError ? 'cancelled' : 'failed',
                 completed_at: new Date().toISOString(),
                 duration: Math.floor((Date.now() - dbStartTime.getTime()) / 1000),
                 logs: dbLogs,
                 error_message: errMsg,
               })
               .eq('id', backupId);
+            
+            if (isCancelError) {
+              wasCancelled = true;
+              onProgress({
+                executionId: execution.id,
+                jobName: job.name,
+                databaseName: db.name,
+                currentChunk: 0,
+                totalChunks: 0,
+                currentDatabase: i + 1,
+                totalDatabases: databases.length,
+                phase: 'cancelled',
+                message: 'Backup cancelado pelo usuário',
+                startedAt: startTime,
+              });
+              
+              // Mark remaining databases as cancelled
+              for (let j = i + 1; j < databases.length; j++) {
+                const remainingBackupId = dbBackupIds[j];
+                await supabase
+                  .from('execution_database_backups')
+                  .update({
+                    status: 'cancelled',
+                    completed_at: new Date().toISOString(),
+                    error_message: 'Cancelado pelo usuário',
+                  })
+                  .eq('id', remainingBackupId);
+              }
+              
+              break;
+            }
             
             failedCount++;
             
@@ -378,10 +470,25 @@ export function useRunBackupWithProgress(onProgress: ProgressCallback) {
         // Finalize
         const endTime = new Date();
         const totalDuration = Math.floor((endTime.getTime() - startTime.getTime()) / 1000);
-        const overallStatus = failedCount === 0 ? 'success' : successCount === 0 ? 'failed' : 'success';
+        
+        let overallStatus: 'success' | 'failed' | 'cancelled';
+        if (wasCancelled) {
+          overallStatus = 'cancelled';
+        } else if (failedCount === 0) {
+          overallStatus = 'success';
+        } else if (successCount === 0) {
+          overallStatus = 'failed';
+        } else {
+          overallStatus = 'success';
+        }
         
         allLogs += `\n[${endTime.toISOString()}] ═══════════════════════════════════════\n`;
-        allLogs += `[${endTime.toISOString()}] Resumo: ${successCount}/${databases.length} bancos\n`;
+        if (wasCancelled) {
+          allLogs += `[${endTime.toISOString()}] Backup cancelado\n`;
+          allLogs += `[${endTime.toISOString()}] Processados: ${successCount}/${databases.length} bancos\n`;
+        } else {
+          allLogs += `[${endTime.toISOString()}] Resumo: ${successCount}/${databases.length} bancos\n`;
+        }
         allLogs += `[${endTime.toISOString()}] Tamanho: ${(totalSize / 1024 / 1024).toFixed(2)} MB\n`;
         allLogs += `[${endTime.toISOString()}] Duração: ${totalDuration}s\n`;
         
@@ -393,16 +500,30 @@ export function useRunBackupWithProgress(onProgress: ProgressCallback) {
             duration: totalDuration,
             file_size: totalSize,
             logs: allLogs,
-            error_message: failedCount > 0 ? `${failedCount} banco(s) falharam` : null,
+            error_message: wasCancelled 
+              ? 'Cancelado pelo usuário' 
+              : failedCount > 0 
+                ? `${failedCount} banco(s) falharam` 
+                : null,
           })
           .eq('id', execution.id);
         
         await supabase
           .from('backup_jobs')
-          .update({ status: overallStatus })
+          .update({ status: overallStatus === 'cancelled' ? 'scheduled' : overallStatus })
           .eq('id', jobId);
         
-        if (failedCount > 0) {
+        if (wasCancelled) {
+          await supabase
+            .from('alerts')
+            .insert({
+              job_id: jobId,
+              execution_id: execution.id,
+              type: 'warning',
+              title: 'Backup cancelado',
+              message: `${successCount} de ${databases.length} bancos foram processados antes do cancelamento`,
+            });
+        } else if (failedCount > 0) {
           await supabase
             .from('alerts')
             .insert({
@@ -419,22 +540,26 @@ export function useRunBackupWithProgress(onProgress: ProgressCallback) {
         queryClient.invalidateQueries({ queryKey: ['alerts'] });
         
         // Show done progress briefly then clear
-        onProgress({
-          executionId: execution.id,
-          jobName: job.name,
-          databaseName: databases[databases.length - 1].name,
-          currentChunk: 0,
-          totalChunks: 0,
-          currentDatabase: databases.length,
-          totalDatabases: databases.length,
-          phase: 'done',
-          message: `${successCount}/${databases.length} bancos processados`,
-          startedAt: startTime,
-        });
+        if (!wasCancelled) {
+          onProgress({
+            executionId: execution.id,
+            jobName: job.name,
+            databaseName: databases[databases.length - 1].name,
+            currentChunk: 0,
+            totalChunks: 0,
+            currentDatabase: databases.length,
+            totalDatabases: databases.length,
+            phase: 'done',
+            message: `${successCount}/${databases.length} bancos processados`,
+            startedAt: startTime,
+          });
+        }
         
         setTimeout(() => onProgress(null), 3000);
         
-        if (overallStatus === 'success') {
+        if (wasCancelled) {
+          toast.warning('Backup cancelado');
+        } else if (overallStatus === 'success') {
           toast.success(`Backup concluído: ${databases.length} bancos`);
         } else if (successCount > 0) {
           toast.warning(`Backup parcial: ${successCount}/${databases.length} bancos`);
