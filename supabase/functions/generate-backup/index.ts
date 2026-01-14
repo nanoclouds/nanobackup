@@ -12,6 +12,19 @@ const corsHeaders = {
 // Configuration
 const TABLE_TIMEOUT_MS = 120000; // 2 minutes per table
 
+// ============= SAFE BASE64 ENCODING (avoids stack overflow) =============
+function safeBase64Encode(bytes: Uint8Array): string {
+  const CHUNK_SIZE = 8192; // Process 8KB at a time to avoid stack overflow
+  let result = '';
+  
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const chunk = bytes.slice(i, Math.min(i + CHUNK_SIZE, bytes.length));
+    result += String.fromCharCode.apply(null, Array.from(chunk));
+  }
+  
+  return btoa(result);
+}
+
 interface TableDependency {
   tableName: string;
   referencedTables: string[];
@@ -390,7 +403,7 @@ serve(async (req) => {
         const checksum = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
         
         // Encode content as base64 to prevent JSON serialization corruption
-        const base64Content = btoa(String.fromCharCode(...contentBytes));
+        const base64Content = safeBase64Encode(contentBytes);
         
         console.log(`Table ${tableName} complete: ${tableRowCount} rows, ${(contentBytes.length / 1024).toFixed(2)} KB in ${duration}ms`);
 
@@ -455,7 +468,7 @@ SET session_replication_role = 'replica';
 `;
       
       const headerBytes = new TextEncoder().encode(header);
-      const base64Header = btoa(String.fromCharCode(...headerBytes));
+      const base64Header = safeBase64Encode(headerBytes);
       
       return new Response(
         JSON.stringify({
@@ -506,7 +519,7 @@ SET session_replication_role = 'origin';
       
       const footerContent = footerParts.join('');
       const footerBytes = new TextEncoder().encode(footerContent);
-      const base64Footer = btoa(String.fromCharCode(...footerBytes));
+      const base64Footer = safeBase64Encode(footerBytes);
       
       return new Response(
         JSON.stringify({
