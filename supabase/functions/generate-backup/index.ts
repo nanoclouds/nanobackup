@@ -47,7 +47,7 @@ interface ValidationResult {
 
 // ============= VALIDATION FUNCTIONS =============
 
-function validateSqlBackup(sqlContent: string): ValidationResult {
+function validateSqlBackup(sqlContent: string, isFirstChunk: boolean, isLastChunk: boolean): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
   let totalInserts = 0;
@@ -103,8 +103,7 @@ function validateSqlBackup(sqlContent: string): ValidationResult {
     errors.push('Aspas simples não fechadas no final do arquivo');
   }
   
-  // 3. Validate INSERT statements
-  const insertRegex = /INSERT INTO public\."([^"]+)" \(([^)]+)\) VALUES \((.+)\);/g;
+  // 3. Validate INSERT statements (line by line validation)
   const lines = sqlContent.split('\n');
   
   for (let lineNum = 0; lineNum < lines.length; lineNum++) {
@@ -113,20 +112,9 @@ function validateSqlBackup(sqlContent: string): ValidationResult {
     // Skip comments and empty lines
     if (line.startsWith('--') || line === '') continue;
     
-    // Check CREATE TABLE
+    // Count CREATE TABLEs (don't validate closing - parentheses check already covers that)
     if (line.startsWith('CREATE TABLE')) {
       totalCreateTables++;
-      // Find matching closing
-      let found = false;
-      for (let j = lineNum; j < lines.length && j < lineNum + 100; j++) {
-        if (lines[j].includes(');')) {
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        errors.push(`CREATE TABLE na linha ${lineNum + 1} sem fechamento`);
-      }
     }
     
     // Check INSERT statement structure
@@ -145,7 +133,7 @@ function validateSqlBackup(sqlContent: string): ValidationResult {
         continue;
       }
       
-      // Extract column count
+      // Extract column count - only validate if we can parse it cleanly
       const colMatch = line.match(/\(([^)]+)\) VALUES/);
       if (colMatch) {
         const cols = colMatch[1].split(',').length;
@@ -165,17 +153,17 @@ function validateSqlBackup(sqlContent: string): ValidationResult {
     }
   }
   
-  // 4. Check for header and footer
-  if (!sqlContent.includes('PostgreSQL database dump')) {
+  // 4. Check for header and footer (only on appropriate chunks)
+  if (isFirstChunk && !sqlContent.includes('PostgreSQL database dump')) {
     warnings.push('Cabeçalho do backup ausente');
   }
   
-  if (!sqlContent.includes('dump complete')) {
+  if (isLastChunk && !sqlContent.includes('dump complete')) {
     warnings.push('Rodapé do backup ausente (arquivo incompleto?)');
   }
   
-  // 5. Check for session settings
-  if (!sqlContent.includes("SET session_replication_role = 'replica'")) {
+  // 5. Check for session settings (only on first chunk)
+  if (isFirstChunk && !sqlContent.includes("SET session_replication_role")) {
     warnings.push('SET session_replication_role não encontrado - triggers podem interferir');
   }
   
@@ -711,7 +699,7 @@ SET session_replication_role = 'origin';
     const sqlContent = sqlParts.join('');
     
     // ============= VALIDATE SQL BEFORE RETURNING =============
-    const validation = validateSqlBackup(sqlContent);
+    const validation = validateSqlBackup(sqlContent, isFirstChunk, isLastChunk);
     
     if (!validation.isValid) {
       console.error('SQL validation failed:', validation.errors);
