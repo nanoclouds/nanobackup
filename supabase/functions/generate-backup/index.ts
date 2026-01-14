@@ -389,12 +389,15 @@ serve(async (req) => {
         const hashArray = Array.from(new Uint8Array(hashBuffer));
         const checksum = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
         
+        // Encode content as base64 to prevent JSON serialization corruption
+        const base64Content = btoa(String.fromCharCode(...contentBytes));
+        
         console.log(`Table ${tableName} complete: ${tableRowCount} rows, ${(contentBytes.length / 1024).toFixed(2)} KB in ${duration}ms`);
 
         return new Response(
           JSON.stringify({
             success: true,
-            content: sqlContent,
+            contentBase64: base64Content,
             stats: {
               tableName,
               tableIndex,
@@ -451,10 +454,13 @@ SET session_replication_role = 'replica';
 
 `;
       
+      const headerBytes = new TextEncoder().encode(header);
+      const base64Header = btoa(String.fromCharCode(...headerBytes));
+      
       return new Response(
         JSON.stringify({
           success: true,
-          content: header,
+          contentBase64: base64Header,
           type: 'header',
           stats: { totalTables, totalRows, sequencesCount: sequences.length }
         }),
@@ -498,10 +504,14 @@ SET session_replication_role = 'origin';
 
       await pgClient.end();
       
+      const footerContent = footerParts.join('');
+      const footerBytes = new TextEncoder().encode(footerContent);
+      const base64Footer = btoa(String.fromCharCode(...footerBytes));
+      
       return new Response(
         JSON.stringify({
           success: true,
-          content: footerParts.join(''),
+          contentBase64: base64Footer,
           type: 'footer',
           stats: { totalTables, totalRows, sequencesCount: sequences.length }
         }),
