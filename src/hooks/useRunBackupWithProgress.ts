@@ -9,6 +9,12 @@ interface DiscoveredDatabase {
   size: string;
 }
 
+interface TableInfo {
+  name: string;
+  rows: number;
+  index: number;
+}
+
 // Default databases if none discovered (fallback)
 const DEFAULT_DATABASES = [
   { name: 'postgres', size: '8.5 MB' },
@@ -206,7 +212,7 @@ export function useRunBackupWithProgress(
               currentDatabase: i + 1,
               totalDatabases: databases.length,
               phase: 'metadata',
-              message: 'Obtendo informações do banco...',
+              message: 'Obtendo lista de tabelas...',
               startedAt: startTime,
             });
             
@@ -215,7 +221,7 @@ export function useRunBackupWithProgress(
               throw new Error('Cancelado pelo usuário');
             }
             
-            // Get metadata
+            // Get metadata (list of tables)
             const { data: metadata, error: metaError } = await supabase.functions.invoke('generate-backup', {
               body: {
                 instanceId: job.postgres_instances?.id,
@@ -228,109 +234,128 @@ export function useRunBackupWithProgress(
               throw new Error(metaError?.message || metadata?.message || 'Falha ao obter metadados');
             }
             
-            const estimatedChunks = metadata.metadata?.estimatedChunks || 1;
-            const totalTables = metadata.metadata?.totalTables || 0;
+            const tables: TableInfo[] = metadata.metadata?.tables || [];
+            const totalTables = tables.length;
             const totalRowsInDb = metadata.metadata?.totalRows || 0;
+            const sequencesCount = metadata.metadata?.sequences || 0;
             
-            dbLogs += `[${new Date().toISOString()}] ${totalTables} tabelas, ${totalRowsInDb} linhas, ~${estimatedChunks} chunks estimados\n`;
-            dbLogs += `[${new Date().toISOString()}] ⚙️ Modo: Geração completa em memória + envio único\n`;
+            dbLogs += `[${new Date().toISOString()}] ${totalTables} tabelas, ${totalRowsInDb} registros, ${sequencesCount} sequences\n`;
+            dbLogs += `[${new Date().toISOString()}] ⚙️ Modo: 1 tabela por vez (dados completos)\n`;
             
-            let totalTablesProcessed = 0;
-            let totalRowsProcessed = 0;
-            let chunkCount = 0;
-            
-            // ===== NOVO: Acumular todo o conteúdo em memória =====
+            // ===== ACCUMULATE ALL CONTENT =====
             const allContentParts: string[] = [];
+            let totalRowsProcessed = 0;
             
-            // Process chunks incrementally until no more data - but accumulate in memory
-            let cursor: { tableIndex: number; rowOffset: number } | null = null;
-            let hasMoreData = true;
+            // ===== GENERATE HEADER =====
+            onProgress({
+              executionId: execution.id,
+              jobName: job.name,
+              databaseName: db.name,
+              currentChunk: 0,
+              totalChunks: totalTables + 2, // +2 for header and footer
+              currentDatabase: i + 1,
+              totalDatabases: databases.length,
+              phase: 'generating',
+              message: 'Gerando cabeçalho...',
+              startedAt: startTime,
+            });
             
-            while (hasMoreData) {
-              chunkCount++;
-              
-              // Check for cancellation before each chunk
+            const { data: headerResult, error: headerError } = await supabase.functions.invoke('generate-backup', {
+              body: {
+                instanceId: job.postgres_instances?.id,
+                databaseName: db.name,
+                tableIndex: -1, // Header
+              }
+            });
+            
+            if (headerError || !headerResult?.success) {
+              throw new Error(`Header falhou: ${headerError?.message || headerResult?.message}`);
+            }
+            
+            allContentParts.push(headerResult.content);
+            dbLogs += `[${new Date().toISOString()}] ✓ Header gerado\n`;
+            
+            // ===== PROCESS EACH TABLE =====
+            for (let tableIdx = 0; tableIdx < tables.length; tableIdx++) {
+              // Check for cancellation
               if (checkCancelled && checkCancelled()) {
                 throw new Error('Cancelado pelo usuário');
               }
               
-              // Update progress: generating phase
-              const currentTableInfo = cursor ? ` [tabela ${cursor.tableIndex + 1}]` : '';
+              const table = tables[tableIdx];
+              
+              // Update progress with table name
               onProgress({
                 executionId: execution.id,
                 jobName: job.name,
                 databaseName: db.name,
-                currentChunk: chunkCount,
-                totalChunks: Math.max(estimatedChunks, chunkCount),
+                currentChunk: tableIdx + 1,
+                totalChunks: totalTables,
                 currentDatabase: i + 1,
                 totalDatabases: databases.length,
                 phase: 'generating',
-                message: `Gerando em memória: chunk ${chunkCount}${currentTableInfo}... (${totalRowsProcessed}/${totalRowsInDb} linhas)`,
+                message: `${table.name} (${tableIdx + 1}/${totalTables})`,
                 startedAt: startTime,
               });
               
-              // Generate chunk with cursor
-              const { data: chunkResult, error: chunkError } = await supabase.functions.invoke('generate-backup', {
+              // Generate backup for this table
+              const { data: tableResult, error: tableError } = await supabase.functions.invoke('generate-backup', {
                 body: {
                   instanceId: job.postgres_instances?.id,
                   databaseName: db.name,
-                  format: backupFormat,
-                  includeData: true,
-                  cursor: cursor
+                  tableName: table.name,
+                  tableIndex: tableIdx,
                 }
               });
               
-              if (chunkError || !chunkResult?.success) {
-                // Check if it's a validation error
-                if (chunkResult?.validation && !chunkResult.validation.isValid) {
-                  const validationErrors = chunkResult.validation.errors?.join('; ') || 'Erros de validação';
-                  throw new Error(`Validação falhou no chunk ${chunkCount}: ${validationErrors}`);
-                }
-                throw new Error(`Chunk ${chunkCount} falhou: ${chunkError?.message || chunkResult?.message}`);
+              if (tableError || !tableResult?.success) {
+                throw new Error(`Tabela ${table.name} falhou: ${tableError?.message || tableResult?.message}`);
               }
               
-              // Check validation result
-              const validation = chunkResult.validation;
-              if (validation && !validation.isValid) {
-                const validationErrors = validation.errors?.join('; ') || 'Erros estruturais no SQL';
-                throw new Error(`Backup rejeitado - ${validationErrors}`);
-              }
+              allContentParts.push(tableResult.content);
+              totalRowsProcessed += tableResult.stats?.rowCount || 0;
               
-              // Log validation warnings if any
-              if (validation?.warnings?.length > 0) {
-                dbLogs += `[${new Date().toISOString()}] ⚠ Avisos: ${validation.warnings.join(', ')}\n`;
-              }
-              
-              const chunkContent = chunkResult.content;
-              const chunkSize = chunkResult.stats?.size || 0;
-              const rowsInChunk = chunkResult.stats?.rowsInChunk || 0;
-              const currentTableName = chunkResult.stats?.currentTableName || '';
-              const sequencesCount = chunkResult.stats?.sequencesCount || 0;
-              
-              // ===== ACUMULAR em memória =====
-              allContentParts.push(chunkContent);
-              
-              totalTablesProcessed = chunkResult.stats?.totalTables || totalTablesProcessed;
-              totalRowsProcessed += rowsInChunk;
-              
-              // Update pagination state
-              hasMoreData = chunkResult.pagination?.hasMoreData || false;
-              cursor = chunkResult.pagination?.nextCursor || null;
-              
-              // Build table info for log
-              const tableInfo = currentTableName ? ` → ${currentTableName}` : '';
-              const seqInfo = sequencesCount > 0 && !hasMoreData ? ` [${sequencesCount} sequences]` : '';
-              dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB${seqInfo} ✓\n`;
+              const tableSize = tableResult.stats?.size || 0;
+              const tableRows = tableResult.stats?.rowCount || 0;
+              dbLogs += `[${new Date().toISOString()}] ✓ ${table.name}: ${tableRows} registros, ${(tableSize / 1024).toFixed(1)} KB\n`;
             }
             
-            // ===== JUNTAR TODO O CONTEÚDO =====
+            // ===== GENERATE FOOTER =====
+            onProgress({
+              executionId: execution.id,
+              jobName: job.name,
+              databaseName: db.name,
+              currentChunk: totalTables,
+              totalChunks: totalTables,
+              currentDatabase: i + 1,
+              totalDatabases: databases.length,
+              phase: 'generating',
+              message: 'Finalizando...',
+              startedAt: startTime,
+            });
+            
+            const { data: footerResult, error: footerError } = await supabase.functions.invoke('generate-backup', {
+              body: {
+                instanceId: job.postgres_instances?.id,
+                databaseName: db.name,
+                tableIndex: -2, // Footer
+              }
+            });
+            
+            if (footerError || !footerResult?.success) {
+              throw new Error(`Footer falhou: ${footerError?.message || footerResult?.message}`);
+            }
+            
+            allContentParts.push(footerResult.content);
+            dbLogs += `[${new Date().toISOString()}] ✓ Footer gerado (${sequencesCount} sequences)\n`;
+            
+            // ===== JOIN ALL CONTENT =====
             const fullBackupContent = allContentParts.join('');
             const totalBytes = new TextEncoder().encode(fullBackupContent).length;
             
-            dbLogs += `[${new Date().toISOString()}] ✓ Geração completa: ${totalRowsProcessed} linhas, ${chunkCount} chunks, ${(totalBytes / 1024 / 1024).toFixed(2)} MB\n`;
-            dbLogs += `[${new Date().toISOString()}] ✓ Validação estrutural: OK (tabelas ordenadas por FK)\n`;
+            dbLogs += `[${new Date().toISOString()}] ✓ Backup completo: ${totalRowsProcessed} registros, ${totalTables} tabelas, ${(totalBytes / 1024 / 1024).toFixed(2)} MB\n`;
             
-            // Calculate final SHA256 checksum
+            // Calculate SHA256 checksum
             const encoder = new TextEncoder();
             const data = encoder.encode(fullBackupContent);
             const hashBuffer = await crypto.subtle.digest('SHA-256', data);
@@ -348,28 +373,26 @@ export function useRunBackupWithProgress(
             if (dryRun) {
               dbLogs += `[${new Date().toISOString()}] ⚗️ [DRY RUN] Backup validado com sucesso!\n`;
               dbLogs += `[${new Date().toISOString()}] ⚗️ [DRY RUN] Upload e compressão ignorados\n`;
-              dbLogs += `[${new Date().toISOString()}] ✓ Arquivo restaurável: ${totalTablesProcessed} tabelas, ${totalRowsProcessed} linhas\n`;
               fileSize = totalBytes;
             } else {
-              // ===== ENVIAR ARQUIVO COMPLETO DE UMA SÓ VEZ =====
+              // ===== UPLOAD COMPLETE FILE =====
               if (destination) {
                 onProgress({
                   executionId: execution.id,
                   jobName: job.name,
                   databaseName: db.name,
-                  currentChunk: chunkCount,
-                  totalChunks: chunkCount,
+                  currentChunk: totalTables,
+                  totalChunks: totalTables,
                   currentDatabase: i + 1,
                   totalDatabases: databases.length,
                   phase: 'uploading',
-                  message: `Enviando arquivo completo (${(totalBytes / 1024 / 1024).toFixed(2)} MB)...`,
+                  message: `Enviando ${(totalBytes / 1024 / 1024).toFixed(2)} MB...`,
                   startedAt: startTime,
                 });
                 
                 const uploadFileName = fileName.replace('.gz', '').replace('.zst', '');
                 const uploadPath = ftpPath.replace('.gz', '').replace('.zst', '');
                 
-                // Enviar arquivo completo de uma só vez (NÃO usar appendMode)
                 const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
                   body: {
                     destinationId: destination.id,
@@ -388,17 +411,7 @@ export function useRunBackupWithProgress(
                 }
                 
                 const remoteSize = uploadResult.remoteSize || 0;
-                const uploadedBytes = uploadResult.uploadedBytes || 0;
-                
-                dbLogs += `[${new Date().toISOString()}] ✓ Upload completo: ${(remoteSize / 1024 / 1024).toFixed(2)} MB no servidor\n`;
-                
-                // Verify integrity
-                if (uploadedBytes !== totalBytes) {
-                  dbLogs += `[${new Date().toISOString()}] ⚠ Alerta: Bytes enviados (${uploadedBytes}) ≠ gerados (${totalBytes})\n`;
-                } else {
-                  dbLogs += `[${new Date().toISOString()}] ✓ Integridade verificada: ${totalBytes} bytes\n`;
-                }
-                
+                dbLogs += `[${new Date().toISOString()}] ✓ Upload: ${(remoteSize / 1024 / 1024).toFixed(2)} MB\n`;
                 fileSize = remoteSize;
               } else {
                 dbLogs += `[${new Date().toISOString()}] ⚠ Sem destino configurado\n`;
@@ -411,8 +424,8 @@ export function useRunBackupWithProgress(
                   executionId: execution.id,
                   jobName: job.name,
                   databaseName: db.name,
-                  currentChunk: chunkCount,
-                  totalChunks: chunkCount,
+                  currentChunk: totalTables,
+                  totalChunks: totalTables,
                   currentDatabase: i + 1,
                   totalDatabases: databases.length,
                   phase: 'compressing',
@@ -434,7 +447,7 @@ export function useRunBackupWithProgress(
                 
                 if (!compressError && compressResult?.success) {
                   fileSize = compressResult.compressedSize;
-                  dbLogs += `[${new Date().toISOString()}] Compactado: ${(compressResult.originalSize / 1024).toFixed(2)} KB → ${(fileSize / 1024).toFixed(2)} KB\n`;
+                  dbLogs += `[${new Date().toISOString()}] ✓ Compactado: ${(compressResult.originalSize / 1024).toFixed(2)} KB → ${(fileSize / 1024).toFixed(2)} KB\n`;
                 }
               }
             }
@@ -461,7 +474,7 @@ export function useRunBackupWithProgress(
             
             successCount++;
             totalSize += fileSize;
-            allLogs += `[${dbEndTime.toISOString()}] ✓ ${db.name}: ${(fileSize / 1024).toFixed(2)} KB em ${duration}s\n`;
+            allLogs += `[${dbEndTime.toISOString()}] ✓ ${db.name}: ${totalTables} tabelas, ${(fileSize / 1024).toFixed(2)} KB em ${duration}s\n`;
             
           } catch (err: unknown) {
             const errMsg = err instanceof Error ? err.message : 'Erro desconhecido';
