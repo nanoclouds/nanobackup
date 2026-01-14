@@ -67,18 +67,21 @@ export function useRunBackupWithProgress(
       const { jobId, parentExecutionId, retryCount = 0, selectedDatabases, dryRun = false } = params;
       const startTime = new Date();
       
-      // Get job details
+      // Get job details - include SSH fields
       const { data: job, error: jobError } = await supabase
         .from('backup_jobs')
         .select(`
           id, name, format, compression, max_retries, retry_delay_minutes,
-          postgres_instances (id, name, host, discovered_databases),
+          postgres_instances (id, name, host, discovered_databases, ssh_enabled, ssh_host, ssh_port, ssh_username),
           ftp_destinations (id, name, protocol, host, port, base_directory, username)
         `)
         .eq('id', jobId)
         .single();
       
       if (jobError) throw jobError;
+      
+      // Check if SSH backup is enabled
+      const sshEnabled = job.postgres_instances?.ssh_enabled === true;
       
       // Get databases
       const rawDbs = job.postgres_instances?.discovered_databases;
@@ -127,6 +130,68 @@ export function useRunBackupWithProgress(
         
         const modePrefix = dryRun ? '[DRY RUN] ' : '';
         let allLogs = `[${startTime.toISOString()}] ${logPrefix}${modePrefix}Iniciando backup...\n`;
+        if (dryRun) {
+          allLogs += `[${startTime.toISOString()}] Modo Dry Run: arquivos serão gerados mas NÃO enviados ao destino\n`;
+        }
+
+        // ========= SSH BACKUP MODE =========
+        if (sshEnabled && !dryRun) {
+          allLogs += `[${new Date().toISOString()}] Usando backup via SSH (pg_dump nativo)\n`;
+          allLogs += `[${new Date().toISOString()}] Servidor SSH: ${job.postgres_instances?.ssh_host}:${job.postgres_instances?.ssh_port || 22}\n`;
+          
+          onProgress({
+            executionId: execution.id,
+            jobName: job.name,
+            databaseName: databases[0]?.name || 'Unknown',
+            currentChunk: 0,
+            totalChunks: 1,
+            currentDatabase: 0,
+            totalDatabases: databases.length,
+            phase: 'generating',
+            message: 'Iniciando backup via SSH (pg_dump nativo)...',
+            startedAt: startTime,
+          });
+
+          // Call the SSH backup edge function
+          const { data: sshResult, error: sshError } = await supabase.functions.invoke('ssh-backup', {
+            body: { 
+              jobId, 
+              executionId: execution.id,
+              databases: databases.map(db => db.name)
+            },
+          });
+
+          if (sshError) {
+            throw new Error(`SSH backup failed: ${sshError.message}`);
+          }
+
+          if (!sshResult.success) {
+            throw new Error(`SSH backup failed: ${sshResult.message}`);
+          }
+
+          // SSH backup was successful
+          onProgress({
+            executionId: execution.id,
+            jobName: job.name,
+            databaseName: databases[databases.length - 1]?.name || 'Unknown',
+            currentChunk: 1,
+            totalChunks: 1,
+            currentDatabase: databases.length,
+            totalDatabases: databases.length,
+            phase: 'done',
+            message: 'Backup SSH concluído com sucesso!',
+            startedAt: startTime,
+          });
+
+          return {
+            status: sshResult.status as 'success' | 'failed',
+            fileSize: sshResult.fileSize,
+            duration: sshResult.duration,
+            logs: sshResult.logs?.join('\n') || allLogs,
+          };
+        }
+
+        // ========= ORIGINAL BACKUP MODE (JavaScript-based) =========
         if (dryRun) {
           allLogs += `[${startTime.toISOString()}] ⚗️ Modo Dry Run: Backup será validado mas NÃO enviado ao FTP\n`;
         }
