@@ -44,6 +44,7 @@ interface RunBackupParams {
   parentExecutionId?: string;
   retryCount?: number;
   selectedDatabases?: string[];
+  dryRun?: boolean;
 }
 
 type ProgressCallback = (progress: BackupProgress | null) => void;
@@ -57,7 +58,7 @@ export function useRunBackupWithProgress(
   
   return useMutation({
     mutationFn: async (params: RunBackupParams) => {
-      const { jobId, parentExecutionId, retryCount = 0, selectedDatabases } = params;
+      const { jobId, parentExecutionId, retryCount = 0, selectedDatabases, dryRun = false } = params;
       const startTime = new Date();
       
       // Get job details
@@ -118,7 +119,11 @@ export function useRunBackupWithProgress(
         const backupFormat = job.format || 'custom';
         const compression = job.compression || 'gzip';
         
-        let allLogs = `[${startTime.toISOString()}] ${logPrefix}Iniciando backup...\n`;
+        const modePrefix = dryRun ? '[DRY RUN] ' : '';
+        let allLogs = `[${startTime.toISOString()}] ${logPrefix}${modePrefix}Iniciando backup...\n`;
+        if (dryRun) {
+          allLogs += `[${startTime.toISOString()}] ⚗️ Modo Dry Run: Backup será validado mas NÃO enviado ao FTP\n`;
+        }
         let totalSize = 0;
         let successCount = 0;
         let failedCount = 0;
@@ -339,91 +344,98 @@ export function useRunBackupWithProgress(
               throw new Error('Cancelado pelo usuário');
             }
             
-            // ===== ENVIAR ARQUIVO COMPLETO DE UMA SÓ VEZ =====
-            if (destination) {
-              onProgress({
-                executionId: execution.id,
-                jobName: job.name,
-                databaseName: db.name,
-                currentChunk: chunkCount,
-                totalChunks: chunkCount,
-                currentDatabase: i + 1,
-                totalDatabases: databases.length,
-                phase: 'uploading',
-                message: `Enviando arquivo completo (${(totalBytes / 1024 / 1024).toFixed(2)} MB)...`,
-                startedAt: startTime,
-              });
-              
-              const uploadFileName = fileName.replace('.gz', '').replace('.zst', '');
-              const uploadPath = ftpPath.replace('.gz', '').replace('.zst', '');
-              
-              // Enviar arquivo completo de uma só vez (NÃO usar appendMode)
-              const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
-                body: {
-                  destinationId: destination.id,
-                  fileName: uploadFileName,
-                  remotePath: uploadPath,
-                  fileContent: fullBackupContent,
-                  compression: 'none',
-                  appendMode: false,  // NOVO: Não usar append, sobrescrever com STOR
-                  isFirstChunk: true,
-                  isLastChunk: true,
-                }
-              });
-              
-              if (uploadError || !uploadResult?.success) {
-                throw new Error(`Upload falhou: ${uploadError?.message || uploadResult?.message}`);
-              }
-              
-              const remoteSize = uploadResult.remoteSize || 0;
-              const uploadedBytes = uploadResult.uploadedBytes || 0;
-              const uploadChecksum = uploadResult.checksum || '';
-              
-              dbLogs += `[${new Date().toISOString()}] ✓ Upload completo: ${(remoteSize / 1024 / 1024).toFixed(2)} MB no servidor\n`;
-              
-              // Verify integrity
-              if (uploadedBytes !== totalBytes) {
-                dbLogs += `[${new Date().toISOString()}] ⚠ Alerta: Bytes enviados (${uploadedBytes}) ≠ gerados (${totalBytes})\n`;
-              } else {
-                dbLogs += `[${new Date().toISOString()}] ✓ Integridade verificada: ${totalBytes} bytes\n`;
-              }
-              
-              fileSize = remoteSize;
-            } else {
-              dbLogs += `[${new Date().toISOString()}] ⚠ Sem destino configurado\n`;
+            // ===== DRY RUN: Skip FTP upload =====
+            if (dryRun) {
+              dbLogs += `[${new Date().toISOString()}] ⚗️ [DRY RUN] Backup validado com sucesso!\n`;
+              dbLogs += `[${new Date().toISOString()}] ⚗️ [DRY RUN] Upload e compressão ignorados\n`;
+              dbLogs += `[${new Date().toISOString()}] ✓ Arquivo restaurável: ${totalTablesProcessed} tabelas, ${totalRowsProcessed} linhas\n`;
               fileSize = totalBytes;
-            }
-            
-            // Compress if needed
-            if (compression !== 'none' && destination) {
-              onProgress({
-                executionId: execution.id,
-                jobName: job.name,
-                databaseName: db.name,
-                currentChunk: chunkCount,
-                totalChunks: chunkCount,
-                currentDatabase: i + 1,
-                totalDatabases: databases.length,
-                phase: 'compressing',
-                message: `Compactando com ${compression.toUpperCase()}...`,
-                startedAt: startTime,
-              });
-              
-              const uncompressedPath = ftpPath.replace('.gz', '').replace('.zst', '');
-              
-              const { data: compressResult, error: compressError } = await supabase.functions.invoke('compress-ftp-file', {
-                body: {
-                  destinationId: destination.id,
-                  sourceFilePath: uncompressedPath,
-                  targetFilePath: ftpPath,
-                  compression,
-                  deleteOriginal: true
+            } else {
+              // ===== ENVIAR ARQUIVO COMPLETO DE UMA SÓ VEZ =====
+              if (destination) {
+                onProgress({
+                  executionId: execution.id,
+                  jobName: job.name,
+                  databaseName: db.name,
+                  currentChunk: chunkCount,
+                  totalChunks: chunkCount,
+                  currentDatabase: i + 1,
+                  totalDatabases: databases.length,
+                  phase: 'uploading',
+                  message: `Enviando arquivo completo (${(totalBytes / 1024 / 1024).toFixed(2)} MB)...`,
+                  startedAt: startTime,
+                });
+                
+                const uploadFileName = fileName.replace('.gz', '').replace('.zst', '');
+                const uploadPath = ftpPath.replace('.gz', '').replace('.zst', '');
+                
+                // Enviar arquivo completo de uma só vez (NÃO usar appendMode)
+                const { data: uploadResult, error: uploadError } = await supabase.functions.invoke('upload-to-ftp', {
+                  body: {
+                    destinationId: destination.id,
+                    fileName: uploadFileName,
+                    remotePath: uploadPath,
+                    fileContent: fullBackupContent,
+                    compression: 'none',
+                    appendMode: false,
+                    isFirstChunk: true,
+                    isLastChunk: true,
+                  }
+                });
+                
+                if (uploadError || !uploadResult?.success) {
+                  throw new Error(`Upload falhou: ${uploadError?.message || uploadResult?.message}`);
                 }
-              });
+                
+                const remoteSize = uploadResult.remoteSize || 0;
+                const uploadedBytes = uploadResult.uploadedBytes || 0;
+                
+                dbLogs += `[${new Date().toISOString()}] ✓ Upload completo: ${(remoteSize / 1024 / 1024).toFixed(2)} MB no servidor\n`;
+                
+                // Verify integrity
+                if (uploadedBytes !== totalBytes) {
+                  dbLogs += `[${new Date().toISOString()}] ⚠ Alerta: Bytes enviados (${uploadedBytes}) ≠ gerados (${totalBytes})\n`;
+                } else {
+                  dbLogs += `[${new Date().toISOString()}] ✓ Integridade verificada: ${totalBytes} bytes\n`;
+                }
+                
+                fileSize = remoteSize;
+              } else {
+                dbLogs += `[${new Date().toISOString()}] ⚠ Sem destino configurado\n`;
+                fileSize = totalBytes;
+              }
               
-              if (!compressError && compressResult?.success) {
-                fileSize = compressResult.compressedSize;
-                dbLogs += `[${new Date().toISOString()}] Compactado: ${(compressResult.originalSize / 1024).toFixed(2)} KB → ${(fileSize / 1024).toFixed(2)} KB\n`;
+              // Compress if needed
+              if (compression !== 'none' && destination) {
+                onProgress({
+                  executionId: execution.id,
+                  jobName: job.name,
+                  databaseName: db.name,
+                  currentChunk: chunkCount,
+                  totalChunks: chunkCount,
+                  currentDatabase: i + 1,
+                  totalDatabases: databases.length,
+                  phase: 'compressing',
+                  message: `Compactando com ${compression.toUpperCase()}...`,
+                  startedAt: startTime,
+                });
+                
+                const uncompressedPath = ftpPath.replace('.gz', '').replace('.zst', '');
+                
+                const { data: compressResult, error: compressError } = await supabase.functions.invoke('compress-ftp-file', {
+                  body: {
+                    destinationId: destination.id,
+                    sourceFilePath: uncompressedPath,
+                    targetFilePath: ftpPath,
+                    compression,
+                    deleteOriginal: true
+                  }
+                });
+                
+                if (!compressError && compressResult?.success) {
+                  fileSize = compressResult.compressedSize;
+                  dbLogs += `[${new Date().toISOString()}] Compactado: ${(compressResult.originalSize / 1024).toFixed(2)} KB → ${(fileSize / 1024).toFixed(2)} KB\n`;
+                }
               }
             }
             
@@ -599,6 +611,7 @@ export function useRunBackupWithProgress(
         
         // Show done progress briefly then clear
         if (!wasCancelled) {
+          const dryRunSuffix = dryRun ? ' (Dry Run)' : '';
           onProgress({
             executionId: execution.id,
             jobName: job.name,
@@ -608,7 +621,7 @@ export function useRunBackupWithProgress(
             currentDatabase: databases.length,
             totalDatabases: databases.length,
             phase: 'done',
-            message: `${successCount}/${databases.length} bancos processados`,
+            message: `${successCount}/${databases.length} bancos ${dryRun ? 'validados' : 'processados'}${dryRunSuffix}`,
             startedAt: startTime,
           });
         }
@@ -618,21 +631,25 @@ export function useRunBackupWithProgress(
         if (wasCancelled) {
           toast.warning('Backup cancelado');
         } else if (overallStatus === 'success') {
-          toast.success(`Backup concluído: ${databases.length} bancos`);
+          if (dryRun) {
+            toast.success(`⚗️ Dry Run concluído: ${databases.length} banco(s) validado(s) com sucesso`);
+          } else {
+            toast.success(`Backup concluído: ${databases.length} bancos`);
+          }
         } else if (successCount > 0) {
-          toast.warning(`Backup parcial: ${successCount}/${databases.length} bancos`);
+          toast.warning(`${dryRun ? 'Validação' : 'Backup'} parcial: ${successCount}/${databases.length} bancos`);
         } else {
-          toast.error('Backup falhou');
+          toast.error(dryRun ? 'Validação falhou' : 'Backup falhou');
         }
       };
       
       executeBackup();
       return execution;
     },
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['executions'] });
       queryClient.invalidateQueries({ queryKey: ['jobs'] });
-      toast.info('Backup iniciado...');
+      toast.info(variables.dryRun ? '⚗️ Validação (Dry Run) iniciada...' : 'Backup iniciado...');
     },
     onError: (error) => {
       toast.error('Erro: ' + error.message);

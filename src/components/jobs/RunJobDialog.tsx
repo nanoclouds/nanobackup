@@ -5,7 +5,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Database, Play, AlertCircle, HardDrive } from 'lucide-react';
+import { Switch } from '@/components/ui/switch';
+import { Database, Play, AlertCircle, HardDrive, FlaskConical } from 'lucide-react';
 import { BackupJob } from '@/hooks/useJobs';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -18,7 +19,7 @@ interface RunJobDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   job: BackupJob | null;
-  onConfirm: (selectedDatabases: string[]) => void;
+  onConfirm: (selectedDatabases: string[], dryRun: boolean) => void;
   isPending?: boolean;
 }
 
@@ -26,12 +27,14 @@ export function RunJobDialog({ open, onOpenChange, job, onConfirm, isPending }: 
   const [databases, setDatabases] = useState<DiscoveredDatabase[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [dryRun, setDryRun] = useState(false);
 
   // Fetch databases when dialog opens
   useEffect(() => {
     const fetchDatabases = async () => {
       if (open && job?.instance_id) {
         setLoading(true);
+        setDryRun(false); // Reset dry run on open
         try {
           const { data } = await supabase
             .from('postgres_instances')
@@ -75,7 +78,7 @@ export function RunJobDialog({ open, onOpenChange, job, onConfirm, isPending }: 
   };
 
   const handleConfirm = () => {
-    onConfirm(selected);
+    onConfirm(selected, dryRun);
   };
 
   return (
@@ -175,6 +178,32 @@ export function RunJobDialog({ open, onOpenChange, job, onConfirm, isPending }: 
                 </p>
               )}
             </div>
+
+            {/* Dry Run Option */}
+            <div className="rounded-lg border border-border bg-muted/30 p-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <FlaskConical className="h-4 w-4 text-amber-500" />
+                  <div>
+                    <p className="text-sm font-medium">Modo Dry Run</p>
+                    <p className="text-xs text-muted-foreground">
+                      Valida o backup sem enviar ao FTP
+                    </p>
+                  </div>
+                </div>
+                <Switch 
+                  checked={dryRun} 
+                  onCheckedChange={setDryRun}
+                />
+              </div>
+              {dryRun && (
+                <div className="mt-2 p-2 rounded bg-amber-500/10 border border-amber-500/30">
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    O backup será gerado e validado, mas <strong>não será enviado</strong> ao servidor FTP.
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -185,9 +214,15 @@ export function RunJobDialog({ open, onOpenChange, job, onConfirm, isPending }: 
           <Button 
             onClick={handleConfirm} 
             disabled={selected.length === 0 || isPending}
+            variant={dryRun ? "secondary" : "default"}
           >
             {isPending ? (
               <>Executando...</>
+            ) : dryRun ? (
+              <>
+                <FlaskConical className="mr-2 h-4 w-4" />
+                Validar ({selected.length})
+              </>
             ) : (
               <>
                 <Play className="mr-2 h-4 w-4" />
