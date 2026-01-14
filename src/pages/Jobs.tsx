@@ -31,11 +31,11 @@ export default function Jobs() {
 
   const filtered = jobs.filter(j => j.name.toLowerCase().includes(search.toLowerCase()));
 
-  const handleRunJob = (selectedDatabases: string[]) => {
+  const handleRunJob = (selectedDatabases: string[], dryRun: boolean) => {
     if (selected) {
       // Reset cancellation state before starting new backup
       resetCancellation();
-      runMutation.mutate({ jobId: selected.id, selectedDatabases });
+      runMutation.mutate({ jobId: selected.id, selectedDatabases, dryRun });
       setRunOpen(false);
     }
   };
