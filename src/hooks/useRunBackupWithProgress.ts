@@ -246,14 +246,23 @@ export function useRunBackupWithProgress(
             const allContentParts: string[] = [];
             let totalRowsProcessed = 0;
             
-            // Helper function to decode base64 content
+            // Helper function to decode base64 content safely (handles large content in chunks)
             const decodeBase64Content = (base64: string): string => {
+              // Decode base64 in chunks to avoid memory issues
+              const CHUNK_SIZE = 65536; // 64KB chunks
               const binaryString = atob(base64);
-              const bytes = new Uint8Array(binaryString.length);
-              for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
+              const totalLength = binaryString.length;
+              const bytes = new Uint8Array(totalLength);
+              
+              // Process in chunks to avoid call stack issues
+              for (let offset = 0; offset < totalLength; offset += CHUNK_SIZE) {
+                const end = Math.min(offset + CHUNK_SIZE, totalLength);
+                for (let i = offset; i < end; i++) {
+                  bytes[i] = binaryString.charCodeAt(i);
+                }
               }
-              return new TextDecoder().decode(bytes);
+              
+              return new TextDecoder('utf-8').decode(bytes);
             };
             
             // ===== GENERATE HEADER =====
