@@ -246,6 +246,16 @@ export function useRunBackupWithProgress(
             const allContentParts: string[] = [];
             let totalRowsProcessed = 0;
             
+            // Helper function to decode base64 content
+            const decodeBase64Content = (base64: string): string => {
+              const binaryString = atob(base64);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              return new TextDecoder().decode(bytes);
+            };
+            
             // ===== GENERATE HEADER =====
             onProgress({
               executionId: execution.id,
@@ -272,7 +282,8 @@ export function useRunBackupWithProgress(
               throw new Error(`Header falhou: ${headerError?.message || headerResult?.message}`);
             }
             
-            allContentParts.push(headerResult.content);
+            // Decode base64 header
+            allContentParts.push(decodeBase64Content(headerResult.contentBase64));
             dbLogs += `[${new Date().toISOString()}] ✓ Header gerado\n`;
             
             // ===== PROCESS EACH TABLE =====
@@ -312,7 +323,8 @@ export function useRunBackupWithProgress(
                 throw new Error(`Tabela ${table.name} falhou: ${tableError?.message || tableResult?.message}`);
               }
               
-              allContentParts.push(tableResult.content);
+              // Decode base64 table content
+              allContentParts.push(decodeBase64Content(tableResult.contentBase64));
               totalRowsProcessed += tableResult.stats?.rowCount || 0;
               
               const tableSize = tableResult.stats?.size || 0;
@@ -346,7 +358,8 @@ export function useRunBackupWithProgress(
               throw new Error(`Footer falhou: ${footerError?.message || footerResult?.message}`);
             }
             
-            allContentParts.push(footerResult.content);
+            // Decode base64 footer
+            allContentParts.push(decodeBase64Content(footerResult.contentBase64));
             dbLogs += `[${new Date().toISOString()}] ✓ Footer gerado (${sequencesCount} sequences)\n`;
             
             // ===== JOIN ALL CONTENT =====
