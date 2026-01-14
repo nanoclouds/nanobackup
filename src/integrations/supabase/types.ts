@@ -380,6 +380,12 @@ export type Database = {
           password: string
           pg_dump_format: string | null
           port: number
+          ssh_enabled: boolean | null
+          ssh_host: string | null
+          ssh_password: string | null
+          ssh_port: number | null
+          ssh_private_key: string | null
+          ssh_username: string | null
           ssl_enabled: boolean
           status: Database["public"]["Enums"]["connection_status"]
           updated_at: string
@@ -401,6 +407,12 @@ export type Database = {
           password: string
           pg_dump_format?: string | null
           port?: number
+          ssh_enabled?: boolean | null
+          ssh_host?: string | null
+          ssh_password?: string | null
+          ssh_port?: number | null
+          ssh_private_key?: string | null
+          ssh_username?: string | null
           ssl_enabled?: boolean
           status?: Database["public"]["Enums"]["connection_status"]
           updated_at?: string
@@ -422,6 +434,12 @@ export type Database = {
           password?: string
           pg_dump_format?: string | null
           port?: number
+          ssh_enabled?: boolean | null
+          ssh_host?: string | null
+          ssh_password?: string | null
+          ssh_port?: number | null
+          ssh_private_key?: string | null
+          ssh_username?: string | null
           ssl_enabled?: boolean
           status?: Database["public"]["Enums"]["connection_status"]
           updated_at?: string

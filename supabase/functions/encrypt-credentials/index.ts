@@ -9,10 +9,12 @@ const corsHeaders = {
 };
 
 interface EncryptRequest {
-  type: 'instance' | 'destination';
+  type: 'instance' | 'destination' | 'instance-ssh';
   id: string;
   password?: string;
   ssh_key?: string;
+  ssh_password?: string;
+  ssh_private_key?: string;
 }
 
 serve(async (req) => {
@@ -30,24 +32,10 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_ANON_KEY") ?? ""
     );
 
-    const { type, id, password, ssh_key }: EncryptRequest = await req.json();
+    const { type, id, password, ssh_key, ssh_password, ssh_private_key }: EncryptRequest = await req.json();
     
     if (!type || !id) {
       throw new Error("Type and ID are required");
-    }
-
-    const updates: Record<string, string> = {};
-    
-    if (password !== undefined && password !== '') {
-      updates.password = await encrypt(password);
-    }
-    
-    if (ssh_key !== undefined && ssh_key !== '') {
-      updates.ssh_key = await encrypt(ssh_key);
-    }
-    
-    if (Object.keys(updates).length === 0) {
-      throw new Error("No credentials to encrypt");
     }
 
     // Use service role to update encrypted data
@@ -57,6 +45,38 @@ serve(async (req) => {
     );
 
     if (type === 'instance') {
+      const updates: Record<string, string> = {};
+      
+      if (password !== undefined && password !== '') {
+        updates.password = await encrypt(password);
+      }
+      
+      if (Object.keys(updates).length === 0) {
+        throw new Error("No credentials to encrypt");
+      }
+
+      const { error } = await serviceClient
+        .from("postgres_instances")
+        .update(updates)
+        .eq("id", id);
+      
+      if (error) throw error;
+    } else if (type === 'instance-ssh') {
+      // Encrypt SSH credentials for instance
+      const updates: Record<string, string> = {};
+      
+      if (ssh_password !== undefined && ssh_password !== '') {
+        updates.ssh_password = await encrypt(ssh_password);
+      }
+      
+      if (ssh_private_key !== undefined && ssh_private_key !== '') {
+        updates.ssh_private_key = await encrypt(ssh_private_key);
+      }
+      
+      if (Object.keys(updates).length === 0) {
+        throw new Error("No SSH credentials to encrypt");
+      }
+
       const { error } = await serviceClient
         .from("postgres_instances")
         .update(updates)
@@ -64,6 +84,20 @@ serve(async (req) => {
       
       if (error) throw error;
     } else if (type === 'destination') {
+      const updates: Record<string, string> = {};
+      
+      if (password !== undefined && password !== '') {
+        updates.password = await encrypt(password);
+      }
+      
+      if (ssh_key !== undefined && ssh_key !== '') {
+        updates.ssh_key = await encrypt(ssh_key);
+      }
+      
+      if (Object.keys(updates).length === 0) {
+        throw new Error("No credentials to encrypt");
+      }
+
       const { error } = await serviceClient
         .from("ftp_destinations")
         .update(updates)

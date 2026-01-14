@@ -27,6 +27,13 @@ export interface PostgresInstance {
   created_at: string;
   updated_at: string;
   discovered_databases: DiscoveredDatabase[] | null;
+  // SSH fields for native pg_dump backup
+  ssh_enabled: boolean;
+  ssh_host: string | null;
+  ssh_port: number;
+  ssh_username: string | null;
+  ssh_password: string | null;
+  ssh_private_key: string | null;
 }
 
 export type CreateInstanceData = Omit<PostgresInstance, 'id' | 'created_at' | 'updated_at' | 'created_by' | 'last_checked' | 'version' | 'status' | 'discovered_databases'>;
@@ -55,6 +62,28 @@ async function encryptCredentials(type: 'instance' | 'destination', id: string, 
     }
   } catch (e) {
     console.error('Failed to encrypt credentials:', e);
+  }
+}
+
+// Encrypt SSH credentials for instance
+async function encryptSSHCredentials(instanceId: string, sshPassword?: string | null, sshPrivateKey?: string | null) {
+  if (!sshPassword && !sshPrivateKey) return;
+  
+  try {
+    const { error } = await supabase.functions.invoke('encrypt-credentials', {
+      body: { 
+        type: 'instance-ssh', 
+        id: instanceId, 
+        ssh_password: sshPassword,
+        ssh_private_key: sshPrivateKey 
+      },
+    });
+    
+    if (error) {
+      console.error('Failed to encrypt SSH credentials:', error);
+    }
+  } catch (e) {
+    console.error('Failed to encrypt SSH credentials:', e);
   }
 }
 
@@ -95,15 +124,28 @@ export function useCreateInstance() {
           client_tag: instance.client_tag,
           created_by: user?.id,
           status: 'unknown',
+          // SSH fields
+          ssh_enabled: instance.ssh_enabled || false,
+          ssh_host: instance.ssh_host || null,
+          ssh_port: instance.ssh_port || 22,
+          ssh_username: instance.ssh_username || null,
+          ssh_password: instance.ssh_password || null,
+          ssh_private_key: instance.ssh_private_key || null,
         })
         .select()
         .single();
       
       if (error) throw error;
       
-      // Encrypt the password after creation
-      if (data && instance.password) {
-        await encryptCredentials('instance', data.id, instance.password);
+      // Encrypt the passwords after creation
+      if (data) {
+        if (instance.password) {
+          await encryptCredentials('instance', data.id, instance.password);
+        }
+        // Encrypt SSH credentials if provided
+        if (instance.ssh_password) {
+          await encryptSSHCredentials(data.id, instance.ssh_password, instance.ssh_private_key);
+        }
       }
       
       return data;
