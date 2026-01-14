@@ -361,7 +361,7 @@ serve(async (req) => {
         
         sqlParts.push('\n');
 
-        // Insert ALL data at once
+        // Insert ALL data at once - using batched string building to prevent memory issues
         if (includeData && tableRowCount > 0) {
           const columnNames = columns.map(c => `"${c.column_name}"`).join(', ');
           const selectCols = columns.map(c => `"${c.column_name}"::text`).join(', ');
@@ -377,7 +377,14 @@ serve(async (req) => {
           
           console.log(`Fetched ${dataResult.rows.length} rows, generating INSERTs...`);
           
+          // Build INSERTs in batches to avoid array size issues
+          const BATCH_SIZE = 100;
+          let insertBatch: string[] = [];
           let insertCount = 0;
+          
+          const insertPrefix = `INSERT INTO public."${tableName}" (${columnNames}) VALUES (`;
+          const insertSuffix = ');\n';
+          
           for (const row of dataResult.rows) {
             const valuesParts: string[] = [];
             for (let idx = 0; idx < row.length; idx++) {
@@ -385,11 +392,22 @@ serve(async (req) => {
               valuesParts.push(escapedVal);
             }
             const vals = valuesParts.join(', ');
-            sqlParts.push(`INSERT INTO public."${tableName}" (${columnNames}) VALUES (${vals});\n`);
+            insertBatch.push(insertPrefix + vals + insertSuffix);
             insertCount++;
+            
+            // Flush batch every BATCH_SIZE rows
+            if (insertBatch.length >= BATCH_SIZE) {
+              sqlParts.push(insertBatch.join(''));
+              insertBatch = [];
+            }
           }
           
-          console.log(`Generated ${insertCount} INSERT statements`);
+          // Flush remaining
+          if (insertBatch.length > 0) {
+            sqlParts.push(insertBatch.join(''));
+          }
+          
+          console.log(`Generated ${insertCount} INSERT statements in batches`);
         }
         
         await pgClient.end();
