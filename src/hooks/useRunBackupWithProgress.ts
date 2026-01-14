@@ -276,13 +276,31 @@ export function useRunBackupWithProgress(
               });
               
               if (chunkError || !chunkResult?.success) {
+                // Check if it's a validation error
+                if (chunkResult?.validation && !chunkResult.validation.isValid) {
+                  const validationErrors = chunkResult.validation.errors?.join('; ') || 'Erros de validação';
+                  throw new Error(`Validação falhou no chunk ${chunkCount}: ${validationErrors}`);
+                }
                 throw new Error(`Chunk ${chunkCount} falhou: ${chunkError?.message || chunkResult?.message}`);
+              }
+              
+              // Check validation result
+              const validation = chunkResult.validation;
+              if (validation && !validation.isValid) {
+                const validationErrors = validation.errors?.join('; ') || 'Erros estruturais no SQL';
+                throw new Error(`Backup rejeitado - ${validationErrors}`);
+              }
+              
+              // Log validation warnings if any
+              if (validation?.warnings?.length > 0) {
+                dbLogs += `[${new Date().toISOString()}] ⚠ Avisos: ${validation.warnings.join(', ')}\n`;
               }
               
               const chunkContent = chunkResult.content;
               const chunkSize = chunkResult.stats?.size || 0;
               const rowsInChunk = chunkResult.stats?.rowsInChunk || 0;
               const currentTableName = chunkResult.stats?.currentTableName || '';
+              const sequencesCount = chunkResult.stats?.sequencesCount || 0;
               
               // ===== ACUMULAR em memória =====
               allContentParts.push(chunkContent);
@@ -296,7 +314,8 @@ export function useRunBackupWithProgress(
               
               // Build table info for log
               const tableInfo = currentTableName ? ` → ${currentTableName}` : '';
-              dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB ✓\n`;
+              const seqInfo = sequencesCount > 0 && !hasMoreData ? ` [${sequencesCount} sequences]` : '';
+              dbLogs += `[${new Date().toISOString()}] Chunk ${chunkCount}${tableInfo}: +${rowsInChunk} linhas, ${(chunkSize / 1024).toFixed(2)} KB${seqInfo} ✓\n`;
             }
             
             // ===== JUNTAR TODO O CONTEÚDO =====
@@ -304,6 +323,7 @@ export function useRunBackupWithProgress(
             const totalBytes = new TextEncoder().encode(fullBackupContent).length;
             
             dbLogs += `[${new Date().toISOString()}] ✓ Geração completa: ${totalRowsProcessed} linhas, ${chunkCount} chunks, ${(totalBytes / 1024 / 1024).toFixed(2)} MB\n`;
+            dbLogs += `[${new Date().toISOString()}] ✓ Validação estrutural: OK (tabelas ordenadas por FK)\n`;
             
             // Calculate final SHA256 checksum
             const encoder = new TextEncoder();

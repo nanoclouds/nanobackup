@@ -9,15 +9,259 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Chunk configuration - user defined limits
-const MAX_ROWS_PER_CHUNK = 5000; // 5.000 rows max per chunk
-const BATCH_SIZE_ROWS = 500; // 500 rows per batch
-const MAX_STRING_LENGTH = 2000000; // 2MB max string length
-const TABLE_TIMEOUT_MS = 90000; // 90 seconds timeout per table
+// Chunk configuration
+const MAX_ROWS_PER_CHUNK = 5000;
+const BATCH_SIZE_ROWS = 500;
+const MAX_STRING_LENGTH = 2000000;
+const TABLE_TIMEOUT_MS = 90000;
 
 interface ChunkCursor {
-  tableIndex: number;    // Current table index in the list
-  rowOffset: number;     // Row offset within current table
+  tableIndex: number;
+  rowOffset: number;
+}
+
+interface TableDependency {
+  tableName: string;
+  referencedTables: string[];
+  rowCount: number;
+}
+
+interface SequenceInfo {
+  sequenceName: string;
+  tableName: string;
+  columnName: string;
+  currentValue: number;
+}
+
+interface ValidationResult {
+  isValid: boolean;
+  errors: string[];
+  warnings: string[];
+  stats: {
+    totalInserts: number;
+    totalCreateTables: number;
+    balancedParentheses: boolean;
+    balancedQuotes: boolean;
+  };
+}
+
+// ============= VALIDATION FUNCTIONS =============
+
+function validateSqlBackup(sqlContent: string): ValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  let totalInserts = 0;
+  let totalCreateTables = 0;
+  
+  // 1. Check balanced parentheses (excluding strings)
+  let parenCount = 0;
+  let inString = false;
+  let escapeNext = false;
+  
+  for (let i = 0; i < sqlContent.length; i++) {
+    const char = sqlContent[i];
+    
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    
+    if (char === '\\') {
+      escapeNext = true;
+      continue;
+    }
+    
+    if (char === "'" && !escapeNext) {
+      // Check for escaped quote ''
+      if (i + 1 < sqlContent.length && sqlContent[i + 1] === "'") {
+        i++; // Skip the next quote
+        continue;
+      }
+      inString = !inString;
+      continue;
+    }
+    
+    if (!inString) {
+      if (char === '(') parenCount++;
+      if (char === ')') parenCount--;
+      
+      if (parenCount < 0) {
+        errors.push(`Parêntese de fechamento sem abertura na posição ${i}`);
+        break;
+      }
+    }
+  }
+  
+  const balancedParentheses = parenCount === 0;
+  if (!balancedParentheses) {
+    errors.push(`Parênteses desbalanceados: ${parenCount > 0 ? parenCount + ' não fechados' : Math.abs(parenCount) + ' fechamentos extras'}`);
+  }
+  
+  // 2. Check balanced quotes
+  const balancedQuotes = !inString;
+  if (!balancedQuotes) {
+    errors.push('Aspas simples não fechadas no final do arquivo');
+  }
+  
+  // 3. Validate INSERT statements
+  const insertRegex = /INSERT INTO public\."([^"]+)" \(([^)]+)\) VALUES \((.+)\);/g;
+  const lines = sqlContent.split('\n');
+  
+  for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+    const line = lines[lineNum].trim();
+    
+    // Skip comments and empty lines
+    if (line.startsWith('--') || line === '') continue;
+    
+    // Check CREATE TABLE
+    if (line.startsWith('CREATE TABLE')) {
+      totalCreateTables++;
+      // Find matching closing
+      let found = false;
+      for (let j = lineNum; j < lines.length && j < lineNum + 100; j++) {
+        if (lines[j].includes(');')) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        errors.push(`CREATE TABLE na linha ${lineNum + 1} sem fechamento`);
+      }
+    }
+    
+    // Check INSERT statement structure
+    if (line.startsWith('INSERT INTO')) {
+      totalInserts++;
+      
+      // Must contain VALUES
+      if (!line.includes(' VALUES ')) {
+        errors.push(`INSERT na linha ${lineNum + 1} sem VALUES`);
+        continue;
+      }
+      
+      // Must end with );
+      if (!line.endsWith(');')) {
+        errors.push(`INSERT na linha ${lineNum + 1} não termina com );`);
+        continue;
+      }
+      
+      // Extract column count
+      const colMatch = line.match(/\(([^)]+)\) VALUES/);
+      if (colMatch) {
+        const cols = colMatch[1].split(',').length;
+        
+        // Extract values part
+        const valuesMatch = line.match(/VALUES \((.+)\);$/);
+        if (valuesMatch) {
+          const valuesStr = valuesMatch[1];
+          // Count values (considering strings with commas)
+          const valueCount = countSqlValues(valuesStr);
+          
+          if (valueCount !== cols) {
+            errors.push(`INSERT na linha ${lineNum + 1}: ${cols} colunas mas ${valueCount} valores`);
+          }
+        }
+      }
+    }
+  }
+  
+  // 4. Check for header and footer
+  if (!sqlContent.includes('PostgreSQL database dump')) {
+    warnings.push('Cabeçalho do backup ausente');
+  }
+  
+  if (!sqlContent.includes('dump complete')) {
+    warnings.push('Rodapé do backup ausente (arquivo incompleto?)');
+  }
+  
+  // 5. Check for session settings
+  if (!sqlContent.includes("SET session_replication_role = 'replica'")) {
+    warnings.push('SET session_replication_role não encontrado - triggers podem interferir');
+  }
+  
+  return {
+    isValid: errors.length === 0,
+    errors,
+    warnings,
+    stats: {
+      totalInserts,
+      totalCreateTables,
+      balancedParentheses,
+      balancedQuotes,
+    }
+  };
+}
+
+function countSqlValues(valuesStr: string): number {
+  let count = 1;
+  let inString = false;
+  let parenDepth = 0;
+  
+  for (let i = 0; i < valuesStr.length; i++) {
+    const char = valuesStr[i];
+    
+    if (char === "'" && (i === 0 || valuesStr[i - 1] !== "'")) {
+      // Check for escaped quote
+      if (i + 1 < valuesStr.length && valuesStr[i + 1] === "'") {
+        i++;
+        continue;
+      }
+      inString = !inString;
+      continue;
+    }
+    
+    if (!inString) {
+      if (char === '(') parenDepth++;
+      if (char === ')') parenDepth--;
+      if (char === ',' && parenDepth === 0) count++;
+    }
+  }
+  
+  return count;
+}
+
+// ============= TOPOLOGICAL SORT FOR FK DEPENDENCIES =============
+
+function topologicalSort(tables: TableDependency[]): string[] {
+  const sorted: string[] = [];
+  const visited = new Set<string>();
+  const visiting = new Set<string>();
+  
+  const tableMap = new Map<string, TableDependency>();
+  tables.forEach(t => tableMap.set(t.tableName, t));
+  
+  function visit(tableName: string): boolean {
+    if (visited.has(tableName)) return true;
+    if (visiting.has(tableName)) {
+      // Circular dependency - break by adding anyway
+      console.log(`Circular dependency detected for table: ${tableName}`);
+      return true;
+    }
+    
+    visiting.add(tableName);
+    
+    const table = tableMap.get(tableName);
+    if (table) {
+      for (const ref of table.referencedTables) {
+        if (tableMap.has(ref)) {
+          visit(ref);
+        }
+      }
+    }
+    
+    visiting.delete(tableName);
+    visited.add(tableName);
+    sorted.push(tableName);
+    return true;
+  }
+  
+  for (const table of tables) {
+    if (!visited.has(table.tableName)) {
+      visit(table.tableName);
+    }
+  }
+  
+  return sorted;
 }
 
 serve(async (req) => {
@@ -30,7 +274,6 @@ serve(async (req) => {
   try {
     const authHeader = req.headers.get("Authorization");
     
-    // Verify user has operator or admin role
     await requireOperatorOrAdmin(
       authHeader,
       Deno.env.get("SUPABASE_URL") ?? "",
@@ -49,7 +292,6 @@ serve(async (req) => {
       format = 'sql', 
       includeData = true,
       getMetadataOnly = false,
-      // Incremental cursor - where to resume from
       cursor = null as ChunkCursor | null,
     } = await req.json();
     
@@ -65,7 +307,6 @@ serve(async (req) => {
 
     const targetDb = databaseName || instance.database;
     
-    // Decrypt password if encrypted
     const decryptedPassword = await decrypt(instance.password);
     
     pgClient = new Client({
@@ -81,33 +322,105 @@ serve(async (req) => {
     await pgClient.connect();
     console.log(`Connected to ${instance.host}:${instance.port}/${targetDb}`);
 
-    // Get all table names
+    // ============= GET FOREIGN KEY DEPENDENCIES =============
+    const fkResult = await pgClient.queryObject<{
+      table_name: string;
+      referenced_table: string;
+    }>(`
+      SELECT DISTINCT
+        tc.table_name,
+        ccu.table_name AS referenced_table
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu 
+        ON tc.constraint_name = kcu.constraint_name
+      JOIN information_schema.constraint_column_usage ccu 
+        ON tc.constraint_name = ccu.constraint_name
+      WHERE tc.table_schema = 'public' 
+        AND tc.constraint_type = 'FOREIGN KEY'
+        AND tc.table_name != ccu.table_name
+    `);
+    
+    // Build dependency map
+    const dependencyMap = new Map<string, string[]>();
+    for (const row of fkResult.rows) {
+      const deps = dependencyMap.get(row.table_name) || [];
+      deps.push(row.referenced_table);
+      dependencyMap.set(row.table_name, deps);
+    }
+
+    // Get all tables with row counts
     const tablesResult = await pgClient.queryObject<{ table_name: string }>(`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
       ORDER BY table_name
     `);
 
-    const allTables = tablesResult.rows.map(t => t.table_name);
-    const totalTables = allTables.length;
-
-    // Get row counts for all tables to estimate total chunks
+    const tableDependencies: TableDependency[] = [];
     const tableCounts: { [key: string]: number } = {};
     let totalRows = 0;
     
-    for (const tableName of allTables) {
+    for (const t of tablesResult.rows) {
       const countResult = await pgClient.queryObject<{ cnt: number }>(
-        `SELECT COUNT(*)::int as cnt FROM public."${tableName}"`
+        `SELECT COUNT(*)::int as cnt FROM public."${t.table_name}"`
       );
       const count = countResult.rows[0]?.cnt || 0;
-      tableCounts[tableName] = count;
+      tableCounts[t.table_name] = count;
       totalRows += count;
+      
+      tableDependencies.push({
+        tableName: t.table_name,
+        referencedTables: dependencyMap.get(t.table_name) || [],
+        rowCount: count,
+      });
     }
     
-    // Estimate total chunks based on rows
+    // Sort tables by FK dependencies (referenced tables first)
+    const sortedTableNames = topologicalSort(tableDependencies);
+    const totalTables = sortedTableNames.length;
+    
+    console.log(`Tables sorted by FK dependencies: ${sortedTableNames.slice(0, 5).join(', ')}...`);
+
+    // ============= GET SEQUENCES =============
+    const sequencesResult = await pgClient.queryObject<{
+      sequence_name: string;
+      table_name: string;
+      column_name: string;
+    }>(`
+      SELECT 
+        s.relname as sequence_name,
+        t.relname as table_name,
+        a.attname as column_name
+      FROM pg_class s
+      JOIN pg_depend d ON d.objid = s.oid
+      JOIN pg_class t ON t.oid = d.refobjid
+      JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+      WHERE s.relkind = 'S'
+        AND t.relkind = 'r'
+        AND t.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+    `);
+    
+    const sequences: SequenceInfo[] = [];
+    for (const seq of sequencesResult.rows) {
+      try {
+        const valResult = await pgClient.queryObject<{ last_value: number }>(
+          `SELECT last_value FROM public."${seq.sequence_name}"`
+        );
+        sequences.push({
+          sequenceName: seq.sequence_name,
+          tableName: seq.table_name,
+          columnName: seq.column_name,
+          currentValue: valResult.rows[0]?.last_value || 1,
+        });
+      } catch {
+        // Sequence might not be accessible
+        console.log(`Could not read sequence ${seq.sequence_name}`);
+      }
+    }
+    
+    console.log(`Found ${sequences.length} sequences`);
+
     const estimatedChunks = Math.max(1, Math.ceil(totalRows / MAX_ROWS_PER_CHUNK));
 
-    // If just getting metadata, return early
     if (getMetadataOnly) {
       await pgClient.end();
       return new Response(
@@ -118,7 +431,12 @@ serve(async (req) => {
             totalRows,
             estimatedChunks,
             maxRowsPerChunk: MAX_ROWS_PER_CHUNK,
-            tables: allTables.map(t => ({ name: t, rows: tableCounts[t] })),
+            tables: sortedTableNames.map(t => ({ 
+              name: t, 
+              rows: tableCounts[t],
+              dependencies: dependencyMap.get(t) || []
+            })),
+            sequences: sequences.length,
             database: targetDb
           }
         }),
@@ -130,7 +448,7 @@ serve(async (req) => {
     const currentCursor: ChunkCursor = cursor || { tableIndex: 0, rowOffset: 0 };
     const isFirstChunk = currentCursor.tableIndex === 0 && currentCursor.rowOffset === 0;
     
-    console.log(`Processing from table ${currentCursor.tableIndex} (${allTables[currentCursor.tableIndex] || 'END'}), row offset ${currentCursor.rowOffset}`);
+    console.log(`Processing from table ${currentCursor.tableIndex} (${sortedTableNames[currentCursor.tableIndex] || 'END'}), row offset ${currentCursor.rowOffset}`);
 
     const startTime = Date.now();
     const sqlParts: string[] = [];
@@ -138,20 +456,21 @@ serve(async (req) => {
     let tablesProcessedInChunk = 0;
     let lastProcessedTableName = '';
     
-    // Next cursor position (will be updated as we process)
     let nextCursor: ChunkCursor | null = null;
     let hasMoreData = false;
 
-    // Add header only on first chunk
+    // ============= HEADER (first chunk only) =============
     if (isFirstChunk) {
       sqlParts.push(`--
--- PostgreSQL database dump
+-- PostgreSQL database dump (Restorable)
 -- Generated by Lovable Backup System
 -- Host: ${instance.host}:${instance.port}
 -- Database: ${targetDb}
 -- Date: ${new Date().toISOString()}
 -- Total Tables: ${totalTables}
 -- Total Rows: ${totalRows}
+-- Sequences: ${sequences.length}
+-- Tables ordered by FK dependencies for safe restoration
 --
 
 SET statement_timeout = 0;
@@ -160,22 +479,21 @@ SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SET check_function_bodies = false;
 SET row_security = off;
+
+-- Disable triggers and FK checks for safe data loading
 SET session_replication_role = 'replica';
 
 `);
     }
 
-    // Process tables starting from cursor position
+    // Process tables in dependency order
     for (let tableIdx = currentCursor.tableIndex; tableIdx < totalTables; tableIdx++) {
-      const tableName = allTables[tableIdx];
+      const tableName = sortedTableNames[tableIdx];
       lastProcessedTableName = tableName;
       const tableRowCount = tableCounts[tableName];
       const tableStartTime = Date.now();
       
-      // Starting row offset for this table
       const startRowOffset = (tableIdx === currentCursor.tableIndex) ? currentCursor.rowOffset : 0;
-      
-      // Check if we need to output table structure (only if starting from row 0)
       const isNewTable = startRowOffset === 0;
       
       try {
@@ -186,8 +504,9 @@ SET session_replication_role = 'replica';
           is_nullable: string;
           column_default: string | null;
           character_maximum_length: number | null;
+          udt_name: string;
         }>(`
-          SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
+          SELECT column_name, data_type, is_nullable, column_default, character_maximum_length, udt_name
           FROM information_schema.columns
           WHERE table_schema = 'public' AND table_name = $1
           ORDER BY ordinal_position
@@ -196,18 +515,48 @@ SET session_replication_role = 'replica';
         const columns = columnsResult.rows;
         if (columns.length === 0) continue;
 
-        // Get primary key for ordering
+        // Get primary key
         const pkResult = await pgClient.queryObject<{ column_name: string }>(`
           SELECT kcu.column_name FROM information_schema.table_constraints tc
           JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
           WHERE tc.table_schema = 'public' AND tc.table_name = $1 AND tc.constraint_type = 'PRIMARY KEY'
+        `, [tableName]);
+        
+        // Get unique constraints
+        const uniqueResult = await pgClient.queryObject<{ 
+          constraint_name: string; 
+          column_name: string 
+        }>(`
+          SELECT tc.constraint_name, kcu.column_name
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
+          WHERE tc.table_schema = 'public' AND tc.table_name = $1 AND tc.constraint_type = 'UNIQUE'
+          ORDER BY tc.constraint_name, kcu.ordinal_position
+        `, [tableName]);
+        
+        // Get indexes
+        const indexResult = await pgClient.queryObject<{
+          indexname: string;
+          indexdef: string;
+        }>(`
+          SELECT indexname, indexdef 
+          FROM pg_indexes 
+          WHERE schemaname = 'public' AND tablename = $1
+            AND indexname NOT LIKE '%_pkey'
         `, [tableName]);
 
         // Build CREATE TABLE only if new table
         if (isNewTable) {
           const columnDefs = columns.map(col => {
             let typeDef = col.data_type.toUpperCase();
-            if (col.character_maximum_length) typeDef = `${typeDef}(${col.character_maximum_length})`;
+            
+            // Handle array types
+            if (col.data_type === 'ARRAY') {
+              typeDef = col.udt_name.replace('_', '') + '[]';
+            } else if (col.character_maximum_length) {
+              typeDef = `${typeDef}(${col.character_maximum_length})`;
+            }
+            
             if (col.is_nullable === 'NO') typeDef += ' NOT NULL';
             if (col.column_default) typeDef += ` DEFAULT ${col.column_default}`;
             return `  "${col.column_name}" ${typeDef}`;
@@ -217,19 +566,32 @@ SET session_replication_role = 'replica';
             const pkCols = pkResult.rows.map(r => `"${r.column_name}"`).join(', ');
             columnDefs.push(`  PRIMARY KEY (${pkCols})`);
           }
-
-          sqlParts.push(`\n-- Table: ${tableName}\nDROP TABLE IF EXISTS public."${tableName}" CASCADE;\n`);
-          sqlParts.push(`CREATE TABLE public."${tableName}" (\n${columnDefs.join(',\n')}\n);\n\n`);
           
-          if (tableRowCount > 0) {
-            sqlParts.push(`-- Data for ${tableName} (${tableRowCount} rows total)\n`);
+          // Group unique constraints
+          const uniqueGroups = new Map<string, string[]>();
+          for (const u of uniqueResult.rows) {
+            const cols = uniqueGroups.get(u.constraint_name) || [];
+            cols.push(`"${u.column_name}"`);
+            uniqueGroups.set(u.constraint_name, cols);
+          }
+          for (const [, cols] of uniqueGroups) {
+            columnDefs.push(`  UNIQUE (${cols.join(', ')})`);
+          }
+
+          sqlParts.push(`\n-- Table: ${tableName} (${tableRowCount} rows)\n`);
+          sqlParts.push(`DROP TABLE IF EXISTS public."${tableName}" CASCADE;\n`);
+          sqlParts.push(`CREATE TABLE public."${tableName}" (\n${columnDefs.join(',\n')}\n);\n`);
+          
+          // Add indexes
+          for (const idx of indexResult.rows) {
+            sqlParts.push(`${idx.indexdef};\n`);
           }
           
+          sqlParts.push('\n');
           tablesProcessedInChunk++;
         }
-        // NOTE: Removed continuation comment - it was causing corruption when inserted between chunks
 
-        // Insert data if requested
+        // Insert data
         if (includeData && tableRowCount > 0) {
           const columnNames = columns.map(c => `"${c.column_name}"`).join(', ');
           const selectCols = columns.map(c => `"${c.column_name}"::text`).join(', ');
@@ -240,27 +602,21 @@ SET session_replication_role = 'replica';
           let currentRowOffset = startRowOffset;
           
           while (currentRowOffset < tableRowCount) {
-            // Check if we've hit the chunk limit
             if (rowsProcessedInChunk >= MAX_ROWS_PER_CHUNK) {
-              // Save cursor for next chunk
               nextCursor = { tableIndex: tableIdx, rowOffset: currentRowOffset };
               hasMoreData = true;
               console.log(`Chunk limit reached. Next cursor: table ${tableIdx}, row ${currentRowOffset}`);
               break;
             }
             
-            // Check timeout
             const elapsedMs = Date.now() - tableStartTime;
             if (elapsedMs > TABLE_TIMEOUT_MS) {
-              // Save cursor for next chunk due to timeout
               nextCursor = { tableIndex: tableIdx, rowOffset: currentRowOffset };
               hasMoreData = true;
               console.log(`Table timeout. Next cursor: table ${tableIdx}, row ${currentRowOffset}`);
-              // NOTE: Removed inline comment - it was causing SQL corruption
               break;
             }
             
-            // Calculate how many rows to fetch
             const remainingInChunk = MAX_ROWS_PER_CHUNK - rowsProcessedInChunk;
             const remainingInTable = tableRowCount - currentRowOffset;
             const fetchLimit = Math.min(BATCH_SIZE_ROWS, remainingInChunk, remainingInTable);
@@ -272,27 +628,18 @@ SET session_replication_role = 'replica';
               
               if (dataResult.rows.length === 0) break;
               
-              // Generate INSERT statements - CRITICAL: Build complete statement atomically
               for (const row of dataResult.rows) {
-                // Build values array safely
                 const valuesParts: string[] = [];
                 for (let idx = 0; idx < row.length; idx++) {
-                  const escapedVal = escapeSqlValueFromText(row[idx], columns[idx].data_type);
-                  // Validate that escaped value doesn't contain unescaped newlines
-                  if (escapedVal.includes('\n') && !escapedVal.includes('\\n')) {
-                    console.error(`Warning: Unescaped newline in value for column ${columns[idx].column_name}`);
-                  }
+                  const escapedVal = escapeSqlValueFromText(row[idx], columns[idx].data_type, columns[idx].udt_name);
                   valuesParts.push(escapedVal);
                 }
                 const vals = valuesParts.join(', ');
                 
-                // Build complete INSERT as a single atomic string
-                // CRITICAL: Must be on a single line to prevent chunk boundary corruption
                 const insertStmt = `INSERT INTO public."${tableName}" (${columnNames}) VALUES (${vals});`;
                 
-                // Validate statement structure before adding
                 if (!insertStmt.includes(' VALUES (') || !insertStmt.endsWith(');')) {
-                  console.error(`Malformed INSERT detected for table ${tableName}, row offset ${currentRowOffset}`);
+                  console.error(`Malformed INSERT for table ${tableName}, row offset ${currentRowOffset}`);
                   sqlParts.push(`-- SKIPPED malformed row at offset ${currentRowOffset}\n`);
                   continue;
                 }
@@ -304,56 +651,98 @@ SET session_replication_role = 'replica';
               currentRowOffset += dataResult.rows.length;
             } catch (queryError) {
               console.error(`Query error for ${tableName} at offset ${currentRowOffset}:`, queryError);
-              sqlParts.push(`-- Error fetching data at offset ${currentRowOffset}: ${queryError instanceof Error ? queryError.message : 'Unknown'}\n`);
+              sqlParts.push(`-- Error at offset ${currentRowOffset}: ${queryError instanceof Error ? queryError.message : 'Unknown'}\n`);
               break;
             }
           }
           
-          // If we completed this table, add newline
           if (!hasMoreData && currentRowOffset >= tableRowCount) {
             sqlParts.push('\n');
           }
         }
         
-        // Break outer loop if we need to continue in next chunk
         if (hasMoreData) break;
         
       } catch (tableError) {
         console.error(`Error processing table ${tableName}:`, tableError);
-        sqlParts.push(`-- Error processing table ${tableName}: ${tableError instanceof Error ? tableError.message : 'Unknown error'}\n\n`);
+        sqlParts.push(`-- Error processing table ${tableName}: ${tableError instanceof Error ? tableError.message : 'Unknown'}\n\n`);
       }
     }
 
-    // Determine if this is the last chunk
     const isLastChunk = !hasMoreData;
 
-    // Add footer only on last chunk
+    // ============= FOOTER (last chunk only) =============
     if (isLastChunk) {
-      sqlParts.push(`\n\nSET session_replication_role = 'origin';
+      // Add sequence resets
+      if (sequences.length > 0) {
+        sqlParts.push(`\n-- Reset sequences to current values\n`);
+        for (const seq of sequences) {
+          sqlParts.push(`SELECT setval('public."${seq.sequenceName}"', ${seq.currentValue}, true);\n`);
+        }
+      }
+      
+      // Add FK constraints restoration comment
+      const fkTables = Array.from(dependencyMap.keys());
+      if (fkTables.length > 0) {
+        sqlParts.push(`\n-- Tables with FK constraints (restored via dependency order):\n`);
+        for (const table of fkTables) {
+          const refs = dependencyMap.get(table) || [];
+          sqlParts.push(`-- ${table} -> ${refs.join(', ')}\n`);
+        }
+      }
+      
+      sqlParts.push(`
+
+-- Re-enable triggers and FK checks
+SET session_replication_role = 'origin';
 
 --
 -- PostgreSQL database dump complete
--- All ${totalRows} rows from ${totalTables} tables included
+-- ${totalRows} rows from ${totalTables} tables restored successfully
+-- ${sequences.length} sequences reset
 --
 `);
     } else {
-      // Add clear chunk delimiter to prevent data corruption on append
       sqlParts.push(`\n-- === END OF CHUNK ${currentCursor.tableIndex}_${currentCursor.rowOffset} ===\n\n`);
     }
 
     await pgClient.end();
 
     const sqlContent = sqlParts.join('');
+    
+    // ============= VALIDATE SQL BEFORE RETURNING =============
+    const validation = validateSqlBackup(sqlContent);
+    
+    if (!validation.isValid) {
+      console.error('SQL validation failed:', validation.errors);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          message: 'Backup gerado com erros estruturais',
+          validation: {
+            isValid: false,
+            errors: validation.errors,
+            warnings: validation.warnings,
+            stats: validation.stats,
+          }
+        }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    
+    if (validation.warnings.length > 0) {
+      console.log('SQL validation warnings:', validation.warnings);
+    }
+    
     const contentBytes = new TextEncoder().encode(sqlContent);
     const chunkSize = contentBytes.length;
     const duration = Date.now() - startTime;
     
-    // Calculate SHA256 checksum of the chunk content
     const hashBuffer = await crypto.subtle.digest("SHA-256", contentBytes);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     const chunkChecksum = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
     
-    console.log(`Chunk complete: ${tablesProcessedInChunk} new tables, ${rowsProcessedInChunk} rows, ${(chunkSize / 1024).toFixed(2)} KB in ${duration}ms. Checksum: ${chunkChecksum.substring(0, 16)}...`);
+    console.log(`Chunk complete: ${tablesProcessedInChunk} tables, ${rowsProcessedInChunk} rows, ${(chunkSize / 1024).toFixed(2)} KB in ${duration}ms. Validation: OK`);
 
     return new Response(
       JSON.stringify({
@@ -370,6 +759,12 @@ SET session_replication_role = 'replica';
           totalRows,
           currentTableName: lastProcessedTableName,
           checksum: chunkChecksum,
+          sequencesCount: sequences.length,
+        },
+        validation: {
+          isValid: true,
+          warnings: validation.warnings,
+          stats: validation.stats,
         },
         pagination: {
           isFirstChunk,
@@ -397,16 +792,13 @@ SET session_replication_role = 'replica';
   }
 });
 
-// Escape SQL value from text representation (avoids date parsing issues)
-function escapeSqlValueFromText(value: unknown, dataType: string): string {
-  // CRITICAL: Always return a valid SQL value, never empty string
+// Escape SQL value from text representation
+function escapeSqlValueFromText(value: unknown, dataType: string, udtName: string = ''): string {
   if (value === null || value === undefined) return 'NULL';
   
   const strValue = String(value);
   
-  // Handle empty strings - always return valid SQL
   if (strValue === '' || strValue === 'null' || strValue === 'undefined') {
-    // For text types, return empty string; for others, return NULL
     if (dataType.includes('char') || dataType === 'text' || dataType === 'name') {
       return "''";
     }
@@ -418,13 +810,12 @@ function escapeSqlValueFromText(value: unknown, dataType: string): string {
     const lower = strValue.toLowerCase();
     if (lower === 't' || lower === 'true' || strValue === '1') return 'TRUE';
     if (lower === 'f' || lower === 'false' || strValue === '0') return 'FALSE';
-    return 'NULL'; // Invalid boolean -> NULL
+    return 'NULL';
   }
   
-  // Handle numeric types - validate and return as-is or NULL
+  // Handle numeric types
   if (dataType.includes('int') || dataType.includes('numeric') || dataType.includes('decimal') || 
       dataType === 'real' || dataType === 'double precision' || dataType === 'money') {
-    // Validate it's a valid number
     const cleanValue = strValue.replace(/,/g, '.').trim();
     if (cleanValue === '' || isNaN(Number(cleanValue.replace(/[^\d.-]/g, '')))) {
       return 'NULL';
@@ -432,12 +823,36 @@ function escapeSqlValueFromText(value: unknown, dataType: string): string {
     return cleanValue;
   }
   
+  // Handle UUID
+  if (dataType === 'uuid' || udtName === 'uuid') {
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(strValue)) {
+      return 'NULL';
+    }
+    return `'${strValue}'`;
+  }
+  
+  // Handle JSON/JSONB
+  if (dataType === 'json' || dataType === 'jsonb' || udtName === 'json' || udtName === 'jsonb') {
+    try {
+      // Validate it's valid JSON
+      JSON.parse(strValue);
+      return escapeStringValue(strValue);
+    } catch {
+      return "'{}'";
+    }
+  }
+  
+  // Handle arrays
+  if (dataType === 'ARRAY' || udtName.startsWith('_')) {
+    return escapeStringValue(strValue);
+  }
+  
   // Handle bytea/binary
   if (dataType === 'bytea') {
     if (strValue.length > 20000) {
       return `'[BINARY_DATA_TRUNCATED_${strValue.length}_CHARS]'`;
     }
-    // Escape properly
     return escapeStringValue(strValue);
   }
   
@@ -445,7 +860,7 @@ function escapeSqlValueFromText(value: unknown, dataType: string): string {
   return escapeStringValue(strValue);
 }
 
-// Helper function to properly escape string values for SQL
+// Escape string values for SQL
 function escapeStringValue(value: string): string {
   let finalValue = value;
   
@@ -454,35 +869,31 @@ function escapeStringValue(value: string): string {
     finalValue = finalValue.substring(0, MAX_STRING_LENGTH) + '...[TRUNCATED]';
   }
   
-  // CRITICAL: Remove all control characters and problematic bytes FIRST
-  // Remove null bytes
+  // Remove null bytes and control characters
   finalValue = finalValue.replace(/\x00/g, '');
-  // Remove other control characters (except tab which might be intentional)
   finalValue = finalValue.replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
   
-  // CRITICAL: Escape backslashes FIRST (before other escapes)
+  // Escape backslashes FIRST
   finalValue = finalValue.replace(/\\/g, '\\\\');
   
-  // Escape single quotes by doubling them
+  // Escape single quotes
   finalValue = finalValue.replace(/'/g, "''");
   
-  // CRITICAL: Convert actual newlines to escaped representation
-  // This prevents line breaks that would corrupt the SQL statement
-  finalValue = finalValue.replace(/\r\n/g, ' ');  // Replace CRLF with space
-  finalValue = finalValue.replace(/\n/g, ' ');    // Replace LF with space  
-  finalValue = finalValue.replace(/\r/g, ' ');    // Replace CR with space
-  finalValue = finalValue.replace(/\t/g, ' ');    // Replace tabs with space
+  // Convert newlines to spaces (prevents SQL statement corruption)
+  finalValue = finalValue.replace(/\r\n/g, ' ');
+  finalValue = finalValue.replace(/\n/g, ' ');
+  finalValue = finalValue.replace(/\r/g, ' ');
+  finalValue = finalValue.replace(/\t/g, ' ');
   
-  // Remove any remaining problematic characters
+  // Remove remaining problematic characters
   finalValue = finalValue.replace(/[\u0000-\u001F]/g, '');
   
-  // Collapse multiple spaces into single space
+  // Collapse multiple spaces
   finalValue = finalValue.replace(/  +/g, ' ');
   
-  // Trim whitespace
+  // Trim
   finalValue = finalValue.trim();
   
-  // If empty after all processing, return empty string
   if (finalValue === '') {
     return "''";
   }
