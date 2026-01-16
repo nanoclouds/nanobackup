@@ -10,6 +10,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useNotificationSettings, useUpdateNotificationSettings } from '@/hooks/useNotificationSettings';
 import { Loader2, Bell, Mail, Webhook, User, Save } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { BackendModeCard } from '@/components/settings/BackendModeCard';
 
 export default function Settings() {
   const { profile, user } = useAuth();
@@ -56,6 +57,9 @@ export default function Settings() {
         </div>
 
         <div className="grid gap-6">
+          {/* Backend Mode Card */}
+          <BackendModeCard />
+
           {/* Profile Card */}
           <Card>
             <CardHeader>
