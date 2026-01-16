@@ -54,6 +54,18 @@ export function BackendModeProvider({ children }: { children: ReactNode }) {
     if (normalizedUrl && !normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
       normalizedUrl = `http://${normalizedUrl}`;
     }
+    // Remove /api suffix if user included it (we add it in getApiBaseUrl)
+    if (normalizedUrl.endsWith('/api')) {
+      normalizedUrl = normalizedUrl.slice(0, -4);
+    }
+    // Remove /api/backup or similar suffixes if user included them
+    const apiPathPatterns = ['/api/backup', '/api/health', '/backup'];
+    for (const pattern of apiPathPatterns) {
+      if (normalizedUrl.endsWith(pattern)) {
+        normalizedUrl = normalizedUrl.slice(0, -pattern.length);
+        break;
+      }
+    }
     setConfig(prev => ({ ...prev, selfHostedUrl: normalizedUrl }));
   };
 
