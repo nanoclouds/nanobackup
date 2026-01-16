@@ -13,7 +13,7 @@ LABEL version="1.0.0"
 
 # Instalar PostgreSQL client (necessário para pg_dump e psql)
 RUN apk add --no-cache \
-    postgresql16-client \
+    postgresql18-client \
     tzdata \
     && rm -rf /var/cache/apk/*
 
