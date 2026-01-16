@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  nanobackup:
+    build:
+      context: ./docs/self-hosted-server
+      dockerfile: Dockerfile
+    container_name: nanobackup
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - TZ=America/Sao_Paulo
+      - TEMP_DIR=/tmp/backups
+      - DIST_DIR=/app/dist
+    volumes:
+      - nanobackup-temp:/tmp/backups
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  nanobackup-temp:
+    driver: local
