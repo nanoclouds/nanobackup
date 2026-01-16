@@ -48,14 +48,23 @@ export function BackendModeProvider({ children }: { children: ReactNode }) {
   };
 
   const setSelfHostedUrl = (url: string) => {
-    // Normalize URL - remove trailing slash
-    const normalizedUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+    // Normalize URL - remove trailing slash and ensure protocol
+    let normalizedUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+    // Add http:// if no protocol specified
+    if (normalizedUrl && !normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+      normalizedUrl = `http://${normalizedUrl}`;
+    }
     setConfig(prev => ({ ...prev, selfHostedUrl: normalizedUrl }));
   };
 
   const getApiBaseUrl = () => {
     if (config.mode === 'self-hosted') {
-      return `${config.selfHostedUrl}/api`;
+      let url = config.selfHostedUrl;
+      // Ensure URL has protocol
+      if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
+        url = `http://${url}`;
+      }
+      return `${url}/api`;
     }
     // For cloud mode, return empty string (uses Supabase functions)
     return '';
