@@ -3,7 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { BackupProgress } from '@/contexts/BackupProgressContext';
-
+import { useBackendMode } from '@/contexts/BackendModeContext';
 interface DiscoveredDatabase {
   name: string;
   size: string;
@@ -61,11 +61,28 @@ export function useRunBackupWithProgress(
   checkCancelled?: CancelCheckCallback
 ) {
   const queryClient = useQueryClient();
+  const { isSelfHosted, getApiBaseUrl } = useBackendMode();
   
   return useMutation({
     mutationFn: async (params: RunBackupParams) => {
       const { jobId, parentExecutionId, retryCount = 0, selectedDatabases, dryRun = false } = params;
       const startTime = new Date();
+      
+      // ========= SELF-HOSTED MODE =========
+      if (isSelfHosted) {
+        return await executeSelfHostedBackup({
+          jobId,
+          selectedDatabases,
+          dryRun,
+          startTime,
+          retryCount,
+          parentExecutionId,
+          apiBaseUrl: getApiBaseUrl(),
+          onProgress,
+          checkCancelled,
+          queryClient,
+        });
+      }
       
       // Get job details - include SSH fields
       const { data: job, error: jobError } = await supabase
@@ -756,4 +773,328 @@ export function useRunBackupWithProgress(
       onProgress(null);
     },
   });
+}
+
+// ========= SELF-HOSTED BACKUP EXECUTION =========
+interface SelfHostedBackupParams {
+  jobId: string;
+  selectedDatabases?: string[];
+  dryRun: boolean;
+  startTime: Date;
+  retryCount: number;
+  parentExecutionId?: string;
+  apiBaseUrl: string;
+  onProgress: ProgressCallback;
+  checkCancelled?: CancelCheckCallback;
+  queryClient: ReturnType<typeof useQueryClient>;
+}
+
+async function executeSelfHostedBackup(params: SelfHostedBackupParams) {
+  const {
+    jobId,
+    selectedDatabases,
+    dryRun,
+    startTime,
+    retryCount,
+    parentExecutionId,
+    apiBaseUrl,
+    onProgress,
+    checkCancelled,
+    queryClient,
+  } = params;
+
+  // Get job details from Supabase (still need this for metadata)
+  const { data: job, error: jobError } = await supabase
+    .from('backup_jobs')
+    .select(`
+      id, name, format, compression,
+      postgres_instances (id, name, host, port, database, username, password, ssl_enabled, discovered_databases),
+      ftp_destinations (id, name, protocol, host, port, base_directory, username, password, ssh_key)
+    `)
+    .eq('id', jobId)
+    .single();
+  
+  if (jobError) throw jobError;
+  
+  const instance = job.postgres_instances;
+  const destination = job.ftp_destinations;
+  
+  // Get databases
+  const rawDbs = instance?.discovered_databases;
+  const discoveredDbs: { name: string; size: string }[] = Array.isArray(rawDbs) 
+    ? (rawDbs as unknown as { name: string; size: string }[])
+    : [];
+  
+  let databases = discoveredDbs.length > 0 
+    ? discoveredDbs.map(db => db.name)
+    : ['postgres'];
+  
+  if (selectedDatabases && selectedDatabases.length > 0) {
+    databases = databases.filter(db => selectedDatabases.includes(db));
+  }
+  
+  // Create execution record
+  const logPrefix = retryCount > 0 ? `[RETRY ${retryCount}] ` : '';
+  
+  const { data: execution, error: execError } = await supabase
+    .from('backup_executions')
+    .insert({
+      job_id: jobId,
+      status: 'running',
+      started_at: startTime.toISOString(),
+      retry_count: retryCount,
+      parent_execution_id: parentExecutionId || null,
+      logs: `[${startTime.toISOString()}] ${logPrefix}[SELF-HOSTED] Iniciando backup via API self-hosted...\n`,
+    })
+    .select()
+    .single();
+  
+  if (execError) throw execError;
+  
+  // Update job status
+  await supabase
+    .from('backup_jobs')
+    .update({ status: 'running', last_run: startTime.toISOString() })
+    .eq('id', jobId);
+
+  // Initial progress
+  onProgress({
+    executionId: execution.id,
+    jobName: job.name,
+    databaseName: databases[0] || 'Unknown',
+    currentChunk: 0,
+    totalChunks: databases.length,
+    currentDatabase: 0,
+    totalDatabases: databases.length,
+    phase: 'generating',
+    message: '[SELF-HOSTED] Iniciando backup...',
+    startedAt: startTime,
+  });
+
+  try {
+    // Call self-hosted API to start backup
+    const response = await fetch(`${apiBaseUrl}/backup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        database: {
+          host: instance?.host,
+          port: instance?.port || 5432,
+          username: instance?.username,
+          password: instance?.password,
+          database: instance?.database,
+          sslEnabled: instance?.ssl_enabled,
+        },
+        destination: {
+          protocol: destination?.protocol || 'sftp',
+          host: destination?.host,
+          port: destination?.port || 22,
+          username: destination?.username,
+          password: destination?.password,
+          sshKey: destination?.ssh_key,
+          baseDirectory: destination?.base_directory || '/',
+        },
+        options: {
+          databases,
+          format: job.format || 'custom',
+          compression: job.compression || 'gzip',
+          dryRun,
+        },
+        executionId: execution.id,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: 'Failed to start backup' }));
+      throw new Error(errorData.message || 'Falha ao iniciar backup self-hosted');
+    }
+
+    const { backupId } = await response.json();
+    
+    let allLogs = `[${startTime.toISOString()}] ${logPrefix}[SELF-HOSTED] Backup iniciado (ID: ${backupId})\n`;
+    
+    // Poll for status
+    let completed = false;
+    let lastStatus = '';
+    
+    while (!completed) {
+      // Check for cancellation
+      if (checkCancelled && checkCancelled()) {
+        // Cancel the backup
+        await fetch(`${apiBaseUrl}/backup/${backupId}/cancel`, { method: 'POST' });
+        throw new Error('Cancelado pelo usuário');
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Poll every second
+      
+      const statusResponse = await fetch(`${apiBaseUrl}/backup/${backupId}`);
+      if (!statusResponse.ok) {
+        throw new Error('Falha ao obter status do backup');
+      }
+      
+      const status = await statusResponse.json();
+      
+      // Update progress based on status
+      if (status.status !== lastStatus) {
+        lastStatus = status.status;
+        
+        let phase: BackupProgress['phase'] = 'generating';
+        if (status.status === 'dumping') phase = 'generating';
+        else if (status.status === 'uploading') phase = 'uploading';
+        else if (status.status === 'completed') phase = 'done';
+        else if (status.status === 'failed') phase = 'error';
+        else if (status.status === 'cancelled') phase = 'cancelled';
+        
+        onProgress({
+          executionId: execution.id,
+          jobName: job.name,
+          databaseName: status.currentDatabase || databases[0],
+          currentChunk: Math.floor((status.progress || 0) / 100 * databases.length),
+          totalChunks: databases.length,
+          currentDatabase: Math.floor((status.progress || 0) / 100 * databases.length) + 1,
+          totalDatabases: databases.length,
+          phase,
+          message: status.message || `[SELF-HOSTED] ${status.status}`,
+          startedAt: startTime,
+        });
+        
+        allLogs += `[${new Date().toISOString()}] ${status.message || status.status}\n`;
+      }
+      
+      if (['completed', 'failed', 'cancelled'].includes(status.status)) {
+        completed = true;
+        
+        const endTime = new Date();
+        const duration = Math.floor((endTime.getTime() - startTime.getTime()) / 1000);
+        
+        let overallStatus: 'success' | 'failed' | 'cancelled' = 'success';
+        if (status.status === 'failed') overallStatus = 'failed';
+        else if (status.status === 'cancelled') overallStatus = 'cancelled';
+        
+        const totalSize = status.result?.totalSize || 0;
+        
+        allLogs += `\n[${endTime.toISOString()}] ═══════════════════════════════════════\n`;
+        allLogs += `[${endTime.toISOString()}] [SELF-HOSTED] Backup ${overallStatus}\n`;
+        allLogs += `[${endTime.toISOString()}] Tamanho: ${(totalSize / 1024 / 1024).toFixed(2)} MB\n`;
+        allLogs += `[${endTime.toISOString()}] Duração: ${duration}s\n`;
+        
+        // Update execution record
+        await supabase
+          .from('backup_executions')
+          .update({
+            status: overallStatus,
+            completed_at: endTime.toISOString(),
+            duration,
+            file_size: totalSize,
+            logs: allLogs,
+            error_message: status.error || null,
+          })
+          .eq('id', execution.id);
+        
+        // Update job status
+        await supabase
+          .from('backup_jobs')
+          .update({ status: overallStatus === 'cancelled' ? 'scheduled' : overallStatus })
+          .eq('id', jobId);
+        
+        // Create database backup records
+        if (status.result?.files) {
+          for (const file of status.result.files) {
+            await supabase
+              .from('execution_database_backups')
+              .insert({
+                execution_id: execution.id,
+                database_name: file.database,
+                status: 'success',
+                file_name: file.fileName,
+                file_size: file.size,
+                storage_path: file.ftpPath,
+                checksum: file.checksum ? `sha256:${file.checksum}` : null,
+                started_at: startTime.toISOString(),
+                completed_at: endTime.toISOString(),
+                duration,
+              });
+          }
+        }
+        
+        queryClient.invalidateQueries({ queryKey: ['executions'] });
+        queryClient.invalidateQueries({ queryKey: ['jobs'] });
+        
+        // Show final progress
+        onProgress({
+          executionId: execution.id,
+          jobName: job.name,
+          databaseName: databases[databases.length - 1],
+          currentChunk: databases.length,
+          totalChunks: databases.length,
+          currentDatabase: databases.length,
+          totalDatabases: databases.length,
+          phase: overallStatus === 'success' ? 'done' : overallStatus === 'failed' ? 'error' : 'cancelled',
+          message: `[SELF-HOSTED] ${databases.length} banco(s) processado(s)`,
+          startedAt: startTime,
+        });
+        
+        setTimeout(() => onProgress(null), 3000);
+        
+        if (overallStatus === 'success') {
+          toast.success(`[Self-Hosted] Backup concluído: ${databases.length} banco(s)`);
+        } else if (overallStatus === 'failed') {
+          toast.error(`[Self-Hosted] Backup falhou: ${status.error || 'Erro desconhecido'}`);
+        } else {
+          toast.warning('[Self-Hosted] Backup cancelado');
+        }
+      }
+    }
+    
+    return execution;
+    
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : 'Erro desconhecido';
+    const isCancelError = errMsg.includes('Cancelado pelo usuário');
+    
+    const endTime = new Date();
+    const duration = Math.floor((endTime.getTime() - startTime.getTime()) / 1000);
+    
+    await supabase
+      .from('backup_executions')
+      .update({
+        status: isCancelError ? 'cancelled' : 'failed',
+        completed_at: endTime.toISOString(),
+        duration,
+        error_message: errMsg,
+        logs: `[${endTime.toISOString()}] [SELF-HOSTED] ${isCancelError ? 'Cancelado' : 'Erro'}: ${errMsg}\n`,
+      })
+      .eq('id', execution.id);
+    
+    await supabase
+      .from('backup_jobs')
+      .update({ status: isCancelError ? 'scheduled' : 'failed' })
+      .eq('id', jobId);
+    
+    queryClient.invalidateQueries({ queryKey: ['executions'] });
+    queryClient.invalidateQueries({ queryKey: ['jobs'] });
+    
+    onProgress({
+      executionId: execution.id,
+      jobName: job.name,
+      databaseName: databases[0] || 'Unknown',
+      currentChunk: 0,
+      totalChunks: 0,
+      currentDatabase: 0,
+      totalDatabases: databases.length,
+      phase: isCancelError ? 'cancelled' : 'error',
+      message: errMsg,
+      startedAt: startTime,
+    });
+    
+    setTimeout(() => onProgress(null), 3000);
+    
+    if (isCancelError) {
+      toast.warning('[Self-Hosted] Backup cancelado');
+    } else {
+      toast.error(`[Self-Hosted] Erro: ${errMsg}`);
+    }
+    
+    return execution;
+  }
 }
