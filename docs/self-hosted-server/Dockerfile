@@ -1,30 +1,10 @@
-# ============================
-# 1) Build do frontend (gera dist/)
-# ============================
-FROM node:20-alpine AS webbuild
-WORKDIR /src
-
-# Dependências
-COPY package*.json ./
-RUN npm install
-
-# Código
-COPY . .
-
-# Build do frontend (Vite)
-RUN npm run build --loglevel verbose || (echo "==== npm build failed ====" && cat /root/.npm/_logs/* || true && exit 1)
-
-
-# ============================
-# 2) Runtime (produção)
-# ============================
 FROM node:20-alpine
 
 LABEL maintainer="NanoBackup"
 LABEL description="NanoBackup Self-Hosted - Backup PostgreSQL com pg_dump nativo"
 LABEL version="1.0.0"
 
-# pg_dump + tz
+# pg_dump + timezone
 RUN apk add --no-cache \
     postgresql18-client \
     tzdata
@@ -35,15 +15,12 @@ WORKDIR /app
 # Diretório temporário
 RUN mkdir -p /tmp/backups && chmod 777 /tmp/backups
 
-# Dependências só de produção
+# Dependências (não existe package-lock? então use npm install)
 COPY package*.json ./
 RUN npm install --omit=dev && npm cache clean --force
 
-# Servidor
+# Código do servidor
 COPY server.js ./
-
-# Frontend compilado
-COPY --from=webbuild /src/dist ./dist
 
 # Usuário não-root
 RUN addgroup -g 1001 -S nanobackup && \
@@ -52,11 +29,9 @@ RUN addgroup -g 1001 -S nanobackup && \
 
 USER nanobackup
 
-# Variáveis padrão
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV TEMP_DIR=/tmp/backups
-ENV DIST_DIR=/app/dist
 
 EXPOSE 3000
 
