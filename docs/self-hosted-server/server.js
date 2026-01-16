@@ -6,7 +6,6 @@
  */
 
 const express = require('express');
-const cors = require('cors');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -16,7 +15,21 @@ const ftp = require('basic-ftp');
 const crypto = require('crypto');
 
 const app = express();
-app.use(cors());
+
+/* ===== CORS MANUAL (antes das rotas) ===== */
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+
+  next();
+});
+/* ========================================= */
+
 app.use(express.json({ limit: '10mb' }));
 
 const PORT = process.env.PORT || 3000;
