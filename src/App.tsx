@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { BackupProgressProvider } from "@/contexts/BackupProgressContext";
+import { BackendModeProvider } from "@/contexts/BackendModeContext";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { BackupProgressBar } from "@/components/backup/BackupProgressBar";
 import Auth from "./pages/Auth";
@@ -23,12 +24,13 @@ const queryClient = new QueryClient();
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
-      <BackupProgressProvider>
-        <Toaster />
-        <Sonner />
-        <BackupProgressBar />
-        <BrowserRouter>
-          <AuthProvider>
+      <BackendModeProvider>
+        <BackupProgressProvider>
+          <Toaster />
+          <Sonner />
+          <BackupProgressBar />
+          <BrowserRouter>
+            <AuthProvider>
             <Routes>
               <Route path="/auth" element={<Auth />} />
               <Route path="/" element={
@@ -77,10 +79,11 @@ const App = () => (
                 </ProtectedRoute>
               } />
               <Route path="*" element={<NotFound />} />
-            </Routes>
-          </AuthProvider>
-        </BrowserRouter>
-      </BackupProgressProvider>
+              </Routes>
+            </AuthProvider>
+          </BrowserRouter>
+        </BackupProgressProvider>
+      </BackendModeProvider>
     </TooltipProvider>
   </QueryClientProvider>
 );
