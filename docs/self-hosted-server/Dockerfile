@@ -6,7 +6,7 @@ WORKDIR /src
 
 # Dependências
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 
 # Código
 COPY . .
@@ -37,7 +37,7 @@ RUN mkdir -p /tmp/backups && chmod 777 /tmp/backups
 
 # Dependências só de produção
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm install --omit=dev && npm cache clean --force
 
 # Servidor
 COPY server.js ./
