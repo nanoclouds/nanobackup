@@ -1,0 +1,38 @@
+# Arquivos de desenvolvimento
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Git
+.git
+.gitignore
+
+# Documentação (não necessária no container)
+README.md
+INSTALL-HOSTINGER.md
+*.md
+
+# Scripts de build
+build.sh
+*.sh
+
+# Arquivos temporários
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Arquivos de IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Arquivos de teste
+*.test.js
+*.spec.js
+__tests__
+
+# Build info (recriado no build)
+.build-info
