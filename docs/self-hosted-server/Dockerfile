@@ -12,7 +12,7 @@ RUN npm install
 COPY . .
 
 # Build do frontend (Vite)
-RUN npm run build
+RUN npm run build --loglevel verbose || (echo "==== npm build failed ====" && cat /root/.npm/_logs/* || true && exit 1)
 
 
 # ============================
