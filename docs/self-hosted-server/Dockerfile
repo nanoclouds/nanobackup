@@ -1,63 +1,66 @@
-# =============================================================================
-# NanoBackup - Dockerfile para Deploy Self-Hosted
-# =============================================================================
-# Imagem otimizada com Node.js + PostgreSQL Client para executar pg_dump
-# =============================================================================
+# ============================
+# 1) Build do frontend (gera dist/)
+# ============================
+FROM node:20-alpine AS webbuild
+WORKDIR /src
 
+# Dependências
+COPY package*.json ./
+RUN npm ci
+
+# Código
+COPY . .
+
+# Build do frontend (Vite)
+RUN npm run build
+
+
+# ============================
+# 2) Runtime (produção)
+# ============================
 FROM node:20-alpine
 
-# Metadados da imagem
 LABEL maintainer="NanoBackup"
 LABEL description="NanoBackup Self-Hosted - Backup PostgreSQL com pg_dump nativo"
 LABEL version="1.0.0"
 
-# Instalar PostgreSQL client (necessário para pg_dump e psql)
+# pg_dump + tz
 RUN apk add --no-cache \
     postgresql18-client \
-    tzdata \
-    && rm -rf /var/cache/apk/*
+    tzdata
 
-# Definir timezone (ajuste conforme necessário)
 ENV TZ=America/Sao_Paulo
-
-# Criar diretório da aplicação
 WORKDIR /app
 
-# Criar diretório para backups temporários
+# Diretório temporário
 RUN mkdir -p /tmp/backups && chmod 777 /tmp/backups
 
-# Copiar arquivos de dependências primeiro (para cache do Docker)
+# Dependências só de produção
 COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Instalar dependências de produção
-RUN npm ci --only=production && npm cache clean --force
-
-# Copiar servidor Node.js
+# Servidor
 COPY server.js ./
 
-# Copiar frontend compilado
-COPY dist/ ./dist/
+# Frontend compilado
+COPY --from=webbuild /src/dist ./dist
 
-# Criar usuário não-root para segurança
+# Usuário não-root
 RUN addgroup -g 1001 -S nanobackup && \
     adduser -S nanobackup -u 1001 -G nanobackup && \
     chown -R nanobackup:nanobackup /app /tmp/backups
 
-# Usar usuário não-root
 USER nanobackup
 
-# Variáveis de ambiente padrão
+# Variáveis padrão
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV TEMP_DIR=/tmp/backups
 ENV DIST_DIR=/app/dist
 
-# Expor porta
 EXPOSE 3000
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
 
-# Comando para iniciar o servidor
 CMD ["node", "server.js"]
